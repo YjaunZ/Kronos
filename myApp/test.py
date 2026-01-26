@@ -46,10 +46,13 @@ model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
 predictor = KronosPredictor(model, tokenizer, max_context=512)
 
 # 获取特定股票数据
-stocksymbol = '000001'
+stocksymbol = '002366'
 period = 'daily'
-start_time = '20220101'
-end_time = '20251201'
+start_time = '20240101'
+# end_time = '20260723'
+# 使用最近的实际交易数据作为基础
+end_time = pd.Timestamp.now().strftime('%Y%m%d')  # 当前日期
+
 data_path = './data/'+stocksymbol+'.csv'
 stockdata = ak.stock_zh_a_hist(stocksymbol, period, start_time, end_time, adjust="qfq")
 # 提取所需字段并重命名为模型需要的格式
@@ -76,8 +79,10 @@ df = pd.read_csv(data_path)
 df['timestamps'] = pd.to_datetime(df['timestamps'])
 
 # Define context window and prediction length
+
 lookback = 400
-pred_len = 120
+pred_len = 100
+
 # Prepare inputs for the predictor
 x_df = df.loc[:lookback-1, ['open', 'high', 'low', 'close', 'volume', 'amount']]
 # A pandas Series of timestamps corresponding to the historical data in df.
@@ -98,13 +103,33 @@ pred_df = predictor.predict(
     sample_count=1,     # Number of forecast paths to generate and average
     verbose=True
 )
+# 设置预测数据的时间戳索引
+pred_df.index = y_timestamp
 
-# 5. Visualize Results
-print("Forecasted Data Head:")
-print(pred_df.head())
+# # 5. Visualize Results
+# print("Forecasted Data Head:")
+# print(pred_df.head())
+# 保存预测数据
+prediction_output_path = f'./data/prediction_{stocksymbol}_{pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")}.csv'
+pred_df.to_csv(prediction_output_path)
+print(f"预测数据已保存到: {prediction_output_path}")
+
+# 创建包含历史数据和预测数据的完整表格
+historical_data = x_df.copy()
+historical_data.index = x_timestamp
+
+# 合并历史数据和预测数据
+full_data = pd.concat([historical_data, pred_df])
+
+# 保存完整数据
+full_output_path = f'./data/full_data_with_prediction_{stocksymbol}_{pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")}.csv'
+full_data.to_csv(full_output_path)
+print(f"完整数据已保存到: {full_output_path}")
 
 # Combine historical and forecasted data for plotting
-kline_df = df.loc[:lookback+pred_len-1]
+kline_df = df.loc[:lookback+pred_len-1].copy()
+kline_df['timestamps'] = pd.to_datetime(kline_df['timestamps'])
+kline_df.set_index('timestamps', inplace=True)
 
 # visualize
 plot_prediction(kline_df, pred_df)
