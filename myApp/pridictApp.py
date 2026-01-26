@@ -1,17 +1,21 @@
 import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-import sys
-import os
 from datetime import datetime, timedelta
 import holidays
 import akshare as ak
-
-# 添加项目路径
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-
+import matplotlib
+import platform
 from model import Kronos, KronosTokenizer, KronosPredictor
+# 根据操作系统自动选择后端
+system = platform.system()
+if system == "Darwin":  # macOS
+    matplotlib.use('MacOSX')
+elif system == "Windows":
+    matplotlib.use('TkAgg')
+else:  # Linux和其他系统
+    matplotlib.use('TkAgg')
+
 
 
 def generate_future_trading_days(start_date, num_days):

@@ -7,6 +7,19 @@ import os
 from datetime import datetime, timedelta
 import holidays
 import akshare as ak
+import matplotlib
+import platform
+
+# 根据操作系统选择合适后端
+system = platform.system()
+if system == "Darwin":  # macOS
+    matplotlib.use('MacOSX')
+elif system == "Windows":
+    matplotlib.use('TkAgg')
+else:  # Linux
+    matplotlib.use('TkAgg')
+
+import matplotlib.pyplot as plt
 '''
 1. 短期预测（1-10天）
     训练天数: 60-120天
