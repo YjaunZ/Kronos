@@ -147,7 +147,7 @@ def predict_stock_for_duration(df, pred_len, model, tokenizer):
 def plot_candlestick_with_ma_macd_and_prediction_continuous_long(historical_df, prediction_df, stock_symbol,
                                                                  prediction_days=60, candle_width=0.6):
     """
-    绘制长线预测带MA20、MA60、MACD和预测的K线图，消除假期导致的时间间隔，使数据连续显示
+    绘制长期预测带MA20、MA60、MACD和预测的K线图，消除假期导致的时间间隔，使数据连续显示
     参数:
     - candle_width: K线宽度，控制K线之间的距离 (0.1-1.0)
     """
@@ -207,26 +207,37 @@ def plot_candlestick_with_ma_macd_and_prediction_continuous_long(historical_df, 
     ax2.axvline(x=split_pos, color='blue', linestyle='--', linewidth=2, zorder=10)
     ax3.axvline(x=split_pos, color='blue', linestyle='--', linewidth=2, zorder=10)
 
-    # 添加成交量柱状图（使用连续索引，调整柱状图宽度）
+    # 添加成交量柱状图（使用连续索引，调整柱状图宽度，使用红绿色区分涨跌）
     volumes = combined_df_reset['volume']
     dates_indices = combined_df_reset['continuous_index']
 
-    # 分别设置历史和预测期间的成交量颜色
+    # 计算涨跌情况，用于成交量着色
+    close_prices = combined_df_reset['close']
+    price_changes = close_prices.diff().fillna(0)
+    volume_colors = ['red' if change >= 0 else 'green' for change in price_changes]
+
+    # 分别设置历史和预测期间的成交量颜色（基于涨跌）
     hist_volumes = combined_df_reset[combined_df_reset['continuous_index'] < hist_len]['volume']
     hist_indices = combined_df_reset[combined_df_reset['continuous_index'] < hist_len]['continuous_index']
+    hist_price_changes = price_changes[combined_df_reset['continuous_index'] < hist_len]
+    hist_colors = ['red' if change >= 0 else 'green' for change in hist_price_changes]
+
     pred_volumes = combined_df_reset[combined_df_reset['continuous_index'] >= hist_len]['volume']
     pred_indices = combined_df_reset[combined_df_reset['continuous_index'] >= hist_len]['continuous_index']
+    pred_price_changes = price_changes[combined_df_reset['continuous_index'] >= hist_len]
+    pred_colors = ['red' if change >= 0 else 'green' for change in pred_price_changes]
 
-    # 历史成交量（灰色）- 使用与K线相同的宽度
-    ax2.bar(hist_indices, hist_volumes, width=candle_width, color='lightgray', alpha=0.6, label='Volume (Historical)')
-    # 预测成交量（浅蓝色）- 使用与K线相同的宽度
-    ax2.bar(pred_indices, pred_volumes, width=candle_width, color='lightblue', alpha=0.6, label='Volume (Predicted)')
+    # 历史成交量（根据涨跌着色）- 使用与K线相同的宽度
+    ax2.bar(hist_indices, hist_volumes, width=candle_width, color=hist_colors, alpha=0.6, label='Volume (Historical)')
+    # 预测成交量（根据涨跌着色）- 使用与K线相同的宽度
+    ax2.bar(pred_indices, pred_volumes, width=candle_width, color=pred_colors, alpha=0.6, label='Volume (Predicted)')
 
     # 绘制MACD图
-    # 绘制MACD柱状图
+    # 绘制MACD柱状图 - 修正颜色逻辑
     histogram_values = histogram
+    # 修正颜色逻辑：正值为红色（多头），负值为绿色（空头）
     bars = ax3.bar(indices, histogram_values, width=candle_width,
-                   color=['green' if x >= 0 else 'red' for x in histogram_values], alpha=0.6)
+                   color=['red' if x >= 0 else 'green' for x in histogram_values], alpha=0.6)
 
     # 绘制MACD线和信号线
     ax3.plot(indices, macd_line, color='blue', linewidth=1, label='MACD')
@@ -244,7 +255,7 @@ def plot_candlestick_with_ma_macd_and_prediction_continuous_long(historical_df, 
     # 设置x轴标签，显示对应的实际日期
     # 每隔一定数量的点显示一个日期标签
     total_points = len(combined_df_reset)
-    step = max(1, total_points // 20)  # 为长线预测增加更多标签
+    step = max(1, total_points // 20)  # 为长期预测调整标签数量
     tick_positions = list(range(0, total_points, step))
     tick_labels = [combined_df_reset.iloc[pos]['index'].strftime('%Y-%m-%d') for pos in tick_positions]
 
@@ -263,9 +274,9 @@ def plot_candlestick_with_ma_macd_and_prediction_continuous_long(historical_df, 
                loc='upper left', fontsize=10)
 
     # 成交量图图例
-    hist_vol_patch = mpatches.Patch(color='lightgray', alpha=0.6, label='Historical Volume')
-    pred_vol_patch = mpatches.Patch(color='lightblue', alpha=0.6, label='Predicted Volume')
-    ax2.legend(handles=[hist_vol_patch, pred_vol_patch], loc='upper left', fontsize=10)
+    up_bar = mpatches.Patch(color='red', alpha=0.6, label='Up Day Volume')
+    down_bar = mpatches.Patch(color='green', alpha=0.6, label='Down Day Volume')
+    ax2.legend(handles=[up_bar, down_bar], loc='upper left', fontsize=10)
 
     # MACD图图例
     macd_line_plot = mlines.Line2D([], [], color='blue', linewidth=1, label='MACD')
@@ -305,13 +316,13 @@ def plot_candlestick_with_ma_macd_and_prediction_continuous_long(historical_df, 
 
 def generate_long_term_prediction_kline_with_ma_macd_continuous(stock_symbol, prediction_days=60, candle_width=0.6):
     """
-    生成带MA20、MA60、MACD和成交量的长线预测K线图的主要函数（连续时间轴版本）
+    生成带MA20、MA60、MACD和成交量的长期预测K线图的主要函数（连续时间轴版本）
     参数:
     - candle_width: K线宽度，控制K线之间的距离 (0.1-1.0)
     """
-    print(f"开始生成股票 {stock_symbol} 的带MA/MACD的长线预测K线图（连续时间轴）...")
+    print(f"开始生成股票 {stock_symbol} 的带MA/MACD的长期预测K线图（连续时间轴）...")
     print(f"K线宽度设置为: {candle_width}")
-    print(f"长线预测天数: {prediction_days} 天")
+    print(f"长期预测天数: {prediction_days} 天")
 
     # 1. 加载模型和分词器
     print("正在加载模型和分词器...")
@@ -326,7 +337,7 @@ def generate_long_term_prediction_kline_with_ma_macd_continuous(stock_symbol, pr
     # 2. 获取股票数据
     print("正在获取股票数据...")
     try:
-        df = get_stock_data(stock_symbol, days=400)  # 获取近400天数据用于长线预测
+        df = get_stock_data(stock_symbol, days=400)  # 获取近400天数据用于长期预测
         if df.empty:
             print("获取的股票数据为空")
             return
@@ -338,11 +349,11 @@ def generate_long_term_prediction_kline_with_ma_macd_continuous(stock_symbol, pr
         print(f"获取股票数据失败: {e}")
         return
 
-    # 3. 执行长线预测
-    print(f"正在进行 {prediction_days} 天的长线预测...")
+    # 3. 执行长期预测
+    print(f"正在进行 {prediction_days} 天的长期预测...")
     try:
         prediction_df = predict_stock_for_duration(df, prediction_days, model, tokenizer)
-        print(f"长线预测完成，预测了 {len(prediction_df)} 天")
+        print(f"长期预测完成，预测了 {len(prediction_df)} 天")
 
         # 如果预测的成交量有负值或异常值，将其设置为合理范围内的平均值
         prediction_df['volume'] = prediction_df['volume'].clip(lower=df['volume'].quantile(0.1),
@@ -352,12 +363,12 @@ def generate_long_term_prediction_kline_with_ma_macd_continuous(stock_symbol, pr
         return
 
     # 4. 绘制K线图（包含MA20、MA60、MACD、成交量，使用连续时间轴）
-    print("正在生成带MA/MACD的连续时间轴长线预测K线图...")
+    print("正在生成带MA/MACD的连续时间轴长期预测K线图...")
     plot_candlestick_with_ma_macd_and_prediction_continuous_long(df, prediction_df, stock_symbol, prediction_days,
                                                                  candle_width)
 
     # 5. 输出预测摘要
-    print("\n=== 长线预测结果摘要 ===")
+    print("\n=== 长期预测结果摘要 ===")
     print(f"股票代码: {stock_symbol}")
     print(f"预测天数: {prediction_days} 天")
     print(f"预测期间价格范围: {prediction_df['close'].min():.2f} - {prediction_df['close'].max():.2f}")
@@ -372,9 +383,9 @@ if __name__ == "__main__":
     # 导入matplotlib.lines用于图例
     from matplotlib import lines as mlines
 
-    # 示例：生成带MA/MACD的长线预测K线图（连续时间轴）
-    stock_symbol = '601012'  # 可以修改为目标股票代码
-    prediction_days = 60  # 长线预测天数
+    # 示例：生成带MA/MACD的长期预测K线图（连续时间轴）
+    stock_symbol = '600726'  # 可以修改为目标股票代码
+    prediction_days = 60  # 长期预测天数
     candle_width = 0.6  # K线宽度，控制K线之间的距离 (0.1-1.0)
 
     generate_long_term_prediction_kline_with_ma_macd_continuous(stock_symbol, prediction_days, candle_width)
