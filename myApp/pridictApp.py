@@ -76,21 +76,21 @@ def plot_prediction_with_future(kline_df, pred_df, stock_symbol):
     ax1.plot(close_df.index[:-len(sr_pred_close)], close_df['Historical'][:-len(sr_pred_close)],
              label='Historical', color='blue', linewidth=1.5, linestyle='-')
     ax1.plot(close_df.index[-len(sr_pred_close):], close_df['Prediction'][-len(sr_pred_close):],
-             label='Prediction', color='red', linewidth=2.0, linestyle='--')
+             label='Prediction', color='red', linewidth=2.0, linestyle='-')
     ax1.set_ylabel('Close Price', fontsize=14)
     ax1.legend(loc='best', fontsize=12)
-    ax1.grid(True, linestyle='--', alpha=0.6)
+    ax1.grid(True, linestyle='-', alpha=0.6)
     ax1.set_title(f'{stock_symbol} Stock Price Forecast', fontsize=16, fontweight='bold')
 
     # 绘制成交量
     ax2.plot(volume_df.index[:-len(sr_pred_volume)], volume_df['Historical'][:-len(sr_pred_volume)],
              label='Historical', color='blue', linewidth=1.5, linestyle='-')
     ax2.plot(volume_df.index[-len(sr_pred_volume):], volume_df['Prediction'][-len(sr_pred_volume):],
-             label='Prediction', color='red', linewidth=2.0, linestyle='--')
+             label='Prediction', color='red', linewidth=2.0, linestyle='-')
     ax2.set_ylabel('Volume', fontsize=14)
     ax2.set_xlabel('Date', fontsize=14)
     ax2.legend(loc='best', fontsize=12)
-    ax2.grid(True, linestyle='--', alpha=0.6)
+    ax2.grid(True, linestyle='-', alpha=0.6)
 
     # 设置日期格式
     ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
@@ -101,13 +101,13 @@ def plot_prediction_with_future(kline_df, pred_df, stock_symbol):
     plt.show()
 
 
-def predict_stock_future(stock_symbol, pred_days=100):
+def predict_stock_future(stock_symbol, pred_days=50):
     """
     预测A股特定股票未来股价的主要函数
 
     Parameters:
     stock_symbol: 股票代码，如 '002366'
-    pred_days: 预测天数，默认100天
+    pred_days: 预测天数，默认50天
     """
     print(f"开始预测股票 {stock_symbol} 未来 {pred_days} 天的股价...")
 
@@ -187,9 +187,9 @@ def predict_stock_future(stock_symbol, pred_days=100):
         df = required_data.set_index('timestamps')
 
         # 确定回看窗口和预测长度
-        max_lookback = min(400, len(df) - 50)  # 确保有足够数据用于预测
+        max_lookback = min(250, len(df) - 50)
         lookback = max_lookback
-        pred_len = min(pred_days, 100)  # 限制单次预测长度
+        pred_len = min(pred_days, 50)
 
         print(f"使用回看窗口: {lookback} 天，预测长度: {pred_len} 天")
 
@@ -315,8 +315,8 @@ def predict_stock_future(stock_symbol, pred_days=100):
 
 if __name__ == "__main__":
     # 示例：预测特定股票
-    stock_symbol = '002153'  # 可以修改为目标股票代码
-    pred_days = 100
+    stock_symbol = '601012'  # 可以修改为目标股票代码
+    pred_days = 50
 
     result = predict_stock_future(stock_symbol, pred_days)
 
