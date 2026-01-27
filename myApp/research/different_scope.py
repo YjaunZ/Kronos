@@ -81,17 +81,28 @@ def generate_future_trading_days(start_date, num_days):
 
 
 def get_stock_data(symbol, days=500):
-    """获取指定天数的股票数据"""
+    """获取指定天数的股票或板块指数数据"""
     end_date = datetime.now().strftime('%Y%m%d')
     start_date = (datetime.now() - timedelta(days=days)).strftime('%Y%m%d')
 
-    stockdata = ak.stock_zh_a_hist(
-        symbol=symbol,
-        period="daily",
-        start_date=start_date,
-        end_date=end_date,
-        adjust="qfq"
-    )
+    # 判断是否为板块指数
+    if symbol.startswith('BK'):
+        # 使用板块指数专用接口
+        stockdata = ak.stock_board_industry_hist_em(
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
+            adjust=""  # 板块指数不需要复权
+        )
+    else:
+        # 使用普通股票接口
+        stockdata = ak.stock_zh_a_hist(
+            symbol=symbol,
+            period="daily",
+            start_date=start_date,
+            end_date=end_date,
+            adjust="qfq"
+        )
 
     # 重命名列
     column_mapping = {
@@ -117,6 +128,20 @@ def get_stock_data(symbol, days=500):
     required_data = required_data.dropna()
 
     return required_data
+
+
+def get_available_industry_codes():
+    """
+    获取所有可用的行业板块代码
+    """
+    try:
+        industry_list = ak.stock_board_industry_name_em()
+        print(f"共找到 {len(industry_list)} 个行业板块")
+        print(industry_list[['板块代码', '板块名称']].head(10))
+        return industry_list
+    except Exception as e:
+        print(f"获取行业板块列表失败: {e}")
+        return None
 
 
 def predict_stock_for_duration(df, pred_len, model, tokenizer):
@@ -202,7 +227,16 @@ def compare_predictions(stock_symbol, short_days=10, medium_days=30, long_days=6
     """
     对比不同预测时长的结果
     """
-    print(f"开始对比股票 {stock_symbol} 不同预测时长的结果...")
+    print(
+        f"开始对比{'板块指数' if stock_symbol.startswith('BK') else '股票'} {stock_symbol} 不同预测时长的结果...")
+
+    # 检查是否为板块指数
+    if stock_symbol.startswith('BK'):
+        print(f"检测到板块指数代码: {stock_symbol}")
+        try:
+            available_codes = get_available_industry_codes()
+        except:
+            print("无法获取行业板块列表")
 
     # 1. 加载模型和分词器
     print("正在加载模型和分词器...")
@@ -214,19 +248,19 @@ def compare_predictions(stock_symbol, short_days=10, medium_days=30, long_days=6
         print(f"模型加载失败: {e}")
         return
 
-    # 2. 获取股票数据
-    print("正在获取股票数据...")
+    # 2. 获取股票或板块指数数据
+    print("正在获取数据...")
     try:
         df = get_stock_data(stock_symbol, days=500)
         if df.empty:
-            print("获取的股票数据为空")
+            print("获取的数据为空")
             return
 
         print(f"获取到 {len(df)} 条历史数据")
         df = df.set_index('timestamps')
 
     except Exception as e:
-        print(f"获取股票数据失败: {e}")
+        print(f"获取数据失败: {e}")
         return
 
     # 3. 执行不同长度的预测
@@ -265,7 +299,7 @@ def compare_predictions(stock_symbol, short_days=10, medium_days=30, long_days=6
 
     # 5. 输出预测摘要
     print("\n=== 预测结果摘要 ===")
-    print(f"股票代码: {stock_symbol}")
+    print(f"{'板块指数' if stock_symbol.startswith('BK') else '股票'}代码: {stock_symbol}")
 
     if short_pred is not None:
         print(
@@ -282,7 +316,7 @@ def compare_predictions(stock_symbol, short_days=10, medium_days=30, long_days=6
 
 if __name__ == "__main__":
     # 示例：对比不同预测时长
-    stock_symbol = '601012'  # 可以修改为目标股票代码
+    stock_symbol = 'BK0427'  # 可以修改为目标股票代码或板块代码如 'BK1033'
 
     # 定义不同的预测时长
     short_term = 10  # 短线预测
