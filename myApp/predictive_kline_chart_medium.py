@@ -417,7 +417,7 @@ if __name__ == "__main__":
     from matplotlib import lines as mlines
 
     # 示例：生成带MA/MACD的中线预测K线图（连续时间轴）
-    stock_symbol = 'BK1042'  # 可以修改为目标股票代码
+    stock_symbol = 'BK1033'  # 可以修改为目标股票代码
     prediction_days = 30  # 中线预测天数
     candle_width = 0.6  # K线宽度，控制K线之间的距离 (0.1-1.0)
 
