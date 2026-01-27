@@ -55,17 +55,28 @@ def generate_future_trading_days(start_date, num_days):
 
 
 def get_stock_data(symbol, days=500):
-    """获取指定天数的股票数据"""
+    """获取指定天数的股票或板块指数数据"""
     end_date = datetime.now().strftime('%Y%m%d')
     start_date = (datetime.now() - timedelta(days=days)).strftime('%Y%m%d')
 
-    stockdata = ak.stock_zh_a_hist(
-        symbol=symbol,
-        period="daily",
-        start_date=start_date,
-        end_date=end_date,
-        adjust="qfq"
-    )
+    # 判断是否为板块指数
+    if symbol.startswith('BK'):
+        # 使用板块指数专用接口
+        stockdata = ak.stock_board_industry_hist_em(
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
+            adjust=""  # 板块指数不需要复权
+        )
+    else:
+        # 使用普通股票接口
+        stockdata = ak.stock_zh_a_hist(
+            symbol=symbol,
+            period="daily",
+            start_date=start_date,
+            end_date=end_date,
+            adjust="qfq"
+        )
 
     # 重命名列
     column_mapping = {
@@ -91,6 +102,20 @@ def get_stock_data(symbol, days=500):
     required_data = required_data.dropna()
 
     return required_data
+
+
+def get_available_industry_codes():
+    """
+    获取所有可用的行业板块代码
+    """
+    try:
+        industry_list = ak.stock_board_industry_name_em()
+        print(f"共找到 {len(industry_list)} 个行业板块")
+        print(industry_list[['板块代码', '板块名称']].head(10))
+        return industry_list
+    except Exception as e:
+        print(f"获取行业板块列表失败: {e}")
+        return None
 
 
 def calculate_ma(data, window):
@@ -320,7 +345,17 @@ def generate_medium_term_prediction_kline_with_ma_macd_continuous(stock_symbol, 
     参数:
     - candle_width: K线宽度，控制K线之间的距离 (0.1-1.0)
     """
-    print(f"开始生成股票 {stock_symbol} 的带MA/MACD的中线预测K线图（连续时间轴）...")
+    print(
+        f"开始生成{'板块指数' if stock_symbol.startswith('BK') else '股票'} {stock_symbol} 的带MA/MACD的中线预测K线图（连续时间轴）...")
+
+    # 检查是否为板块指数
+    if stock_symbol.startswith('BK'):
+        print(f"检测到板块指数代码: {stock_symbol}")
+        try:
+            available_codes = get_available_industry_codes()
+        except:
+            print("无法获取行业板块列表")
+
     print(f"K线宽度设置为: {candle_width}")
     print(f"中线预测天数: {prediction_days} 天")
 
@@ -334,19 +369,19 @@ def generate_medium_term_prediction_kline_with_ma_macd_continuous(stock_symbol, 
         print(f"模型加载失败: {e}")
         return
 
-    # 2. 获取股票数据
-    print("正在获取股票数据...")
+    # 2. 获取股票或板块指数数据
+    print("正在获取数据...")
     try:
         df = get_stock_data(stock_symbol, days=300)  # 获取近300天数据用于中线预测
         if df.empty:
-            print("获取的股票数据为空")
+            print("获取的数据为空")
             return
 
         print(f"获取到 {len(df)} 条历史数据")
         df = df.set_index('timestamps')
 
     except Exception as e:
-        print(f"获取股票数据失败: {e}")
+        print(f"获取数据失败: {e}")
         return
 
     # 3. 执行中线预测
@@ -369,7 +404,7 @@ def generate_medium_term_prediction_kline_with_ma_macd_continuous(stock_symbol, 
 
     # 5. 输出预测摘要
     print("\n=== 中线预测结果摘要 ===")
-    print(f"股票代码: {stock_symbol}")
+    print(f"{'板块指数' if stock_symbol.startswith('BK') else '股票'}代码: {stock_symbol}")
     print(f"预测天数: {prediction_days} 天")
     print(f"预测期间价格范围: {prediction_df['close'].min():.2f} - {prediction_df['close'].max():.2f}")
     print(f"预测期间成交量范围: {int(prediction_df['volume'].min()):,} - {int(prediction_df['volume'].max()):,}")
@@ -382,7 +417,7 @@ if __name__ == "__main__":
     from matplotlib import lines as mlines
 
     # 示例：生成带MA/MACD的中线预测K线图（连续时间轴）
-    stock_symbol = '600726'  # 可以修改为目标股票代码
+    stock_symbol = 'BK1042'  # 可以修改为目标股票代码
     prediction_days = 30  # 中线预测天数
     candle_width = 0.6  # K线宽度，控制K线之间的距离 (0.1-1.0)
 
