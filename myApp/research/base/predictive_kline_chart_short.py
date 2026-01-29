@@ -230,7 +230,7 @@ def predict_stock_for_duration(df, pred_len, model, tokenizer):
         pred_len=pred_len,
         T=1.0,
         top_p=0.9,
-        sample_count=1,
+        sample_count=3,
         verbose=False
     )
 
@@ -416,7 +416,7 @@ if __name__ == "__main__":
     from matplotlib import lines as mlines
 
     # 示例：生成带MA/MACD的短期预测K线图（连续时间轴）
-    stock_symbol = 'BK0427'  # 可以修改为目标股票代码或板块代码如 'BK1033'
+    stock_symbol = '600682'  # 可以修改为目标股票代码或板块代码如 'BK1033'
     prediction_days = 10  # 短期预测天数
     candle_width = 0.6  # K线宽度，控制K线之间的距离 (0.1-1.0)
 

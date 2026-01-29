@@ -1,7 +1,7 @@
 """
-用kronos预测后面20天内涨幅排名前5的行业
+用kronos预测后面10天内涨幅排名前5的行业
 数据获取: 获取所有行业板块指数数据
-预测分析: 使用Kronos模型预测未来20天走势
+预测分析: 使用Kronos模型预测未来10天走势
 排名筛选: 选出预计涨幅前5的板块
 用了predict_batch方法优化效率
 """
@@ -11,7 +11,7 @@ import sys
 import os
 from datetime import datetime, timedelta
 import holidays
-import akshare as ak
+import baostock as bs
 import matplotlib
 import platform
 from scipy import stats
@@ -60,6 +60,91 @@ def generate_future_trading_days(start_date, num_days):
     return trading_days
 
 
+def get_stock_data_baostock(symbol, days=500):
+    """获取指定天数的股票或板块指数数据，使用baostock"""
+    # 登录baostock
+    lg = bs.login()
+    if lg.error_code != '0':
+        print(f"登录baostock失败: {lg.error_msg}")
+        bs.logout()
+        return None
+
+    try:
+        # 转换符号格式：如果是板块指数，需要特殊处理
+        if symbol.startswith('BK'):
+            # baostock中的板块指数格式可能不同，这里需要映射
+            # baostock的行业分类可能需要特别处理
+            # 例如：BK0001 -> bknse000001
+            # 这里假设板块指数格式为BK开头，需要转换成baostock识别的格式
+            bs_code = symbol.lower()  # 有些平台可能需要小写
+            rs = bs.query_history_k_data_plus(
+                bs_code,
+                "date,open,high,low,close,volume,amount",
+                start_date=(datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d'),
+                end_date=datetime.now().strftime('%Y-%m-%d'),
+                frequency="d",
+                adjustflag="3"  # 不复权
+            )
+        else:
+            # 处理股票代码格式转换（baostock要求sh.或sz.前缀）
+            if symbol.startswith(('sh', 'sz')):
+                bs_code = symbol
+            elif symbol.startswith('6'):  # 上交所股票
+                bs_code = f"sh.{symbol}"
+            elif symbol.startswith(('0', '3')):  # 深交所股票
+                bs_code = f"sz.{symbol}"
+            else:
+                # 尝试不同前缀
+                bs_code = f"sh.{symbol}"  # 默认上交所
+
+            rs = bs.query_history_k_data_plus(
+                bs_code,
+                "date,open,high,low,close,volume,amount",
+                start_date=(datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d'),
+                end_date=datetime.now().strftime('%Y-%m-%d'),
+                frequency="d",
+                adjustflag="3"  # 不复权
+            )
+
+        data_list = []
+        while (rs.error_code == '0') & (rs.next()):
+            data_list.append(rs.get_row_data())
+
+        if not data_list:
+            print(f"未获取到 {symbol} 的数据")
+            return None
+
+        result = pd.DataFrame(data_list, columns=rs.fields)
+
+        # 数据类型转换
+        result['date'] = pd.to_datetime(result['date'])
+        result['open'] = pd.to_numeric(result['open'], errors='coerce')
+        result['high'] = pd.to_numeric(result['high'], errors='coerce')
+        result['low'] = pd.to_numeric(result['low'], errors='coerce')
+        result['close'] = pd.to_numeric(result['close'], errors='coerce')
+        result['volume'] = pd.to_numeric(result['volume'], errors='coerce')
+        result['amount'] = pd.to_numeric(result['amount'], errors='coerce')
+
+        # 重命名列
+        result = result.rename(columns={
+            'date': 'timestamps',
+            'open': 'open',
+            'high': 'high',
+            'low': 'low',
+            'close': 'close',
+            'volume': 'volume',
+            'amount': 'amount'
+        })
+
+        # 删除包含NaN的行
+        result = result.dropna()
+
+        return result
+    finally:
+        # 登出baostock
+        bs.logout()
+
+
 def get_stock_data_cached(symbol, days=500, cache_dir="./cache"):
     """
     获取指定天数的股票或板块指数数据，带缓存机制
@@ -92,61 +177,21 @@ def get_stock_data_cached(symbol, days=500, cache_dir="./cache"):
                 print(f"读取缓存失败: {e}")
 
     # 缓存不存在或已过期，重新获取数据
-    end_date = datetime.now().strftime('%Y%m%d')
-    start_date = (datetime.now() - timedelta(days=days)).strftime('%Y%m%d')
+    stockdata = get_stock_data_baostock(symbol, days)
 
-    # 判断是否为板块指数
-    if symbol.startswith('BK'):
-        # 使用板块指数专用接口
-        stockdata = ak.stock_board_industry_hist_em(
-            symbol=symbol,
-            start_date=start_date,
-            end_date=end_date,
-            adjust=""  # 板块指数不需要复权
-        )
-    else:
-        # 使用普通股票接口
-        stockdata = ak.stock_zh_a_hist(
-            symbol=symbol,
-            period="daily",
-            start_date=start_date,
-            end_date=end_date,
-            adjust="qfq"
-        )
-
-    # 重命名列
-    column_mapping = {
-        '日期': 'timestamps',
-        '开盘': 'open',
-        '最高': 'high',
-        '最低': 'low',
-        '收盘': 'close',
-        '成交量': 'volume',
-        '成交额': 'amount'
-    }
-    required_data = stockdata.rename(columns=column_mapping)[list(column_mapping.values())].copy()
-
-    # 转换时间戳格式
-    required_data['timestamps'] = pd.to_datetime(required_data['timestamps'])
-
-    # 确保数值列是数字类型
-    numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount']
-    for col in numeric_columns:
-        required_data[col] = pd.to_numeric(required_data[col], errors='coerce')
-
-    # 删除包含NaN的行
-    required_data = required_data.dropna()
+    if stockdata is None:
+        return None
 
     # 保存到缓存
     try:
-        cache_dict = required_data.copy()
+        cache_dict = stockdata.copy()
         cache_dict['timestamps'] = cache_dict['timestamps'].dt.strftime('%Y-%m-%d')
         with open(cache_file, 'w', encoding='utf-8') as f:
             json.dump(cache_dict.to_dict(orient='records'), f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"保存缓存失败: {e}")
 
-    return required_data
+    return stockdata
 
 
 def rate_limit_decorator(calls_per_second=1):
@@ -180,6 +225,50 @@ def get_single_stock_data(symbol, days=500):
 def get_stock_data(symbol, days=500):
     """获取指定天数的股票或板块指数数据（带缓存和频率限制）"""
     return get_single_stock_data(symbol, days)
+
+
+def get_all_industry_codes():
+    """
+    获取所有行业板块代码
+    """
+    try:
+        # 登录baostock
+        lg = bs.login()
+        if lg.error_code != '0':
+            print(f"登录baostock失败: {lg.error_msg}")
+            bs.logout()
+            return None
+
+        try:
+            # 查询行业分类信息
+            rs = bs.query_stock_industry()
+            industry_list = []
+            while (rs.error_code == '0') & (rs.next()):
+                industry_list.append(rs.get_row_data())
+
+            if not industry_list:
+                print("未获取到行业分类数据")
+                return None
+
+            industry_df = pd.DataFrame(industry_list, columns=rs.fields)
+
+            # 提取板块代码和名称（baostock的字段可能不同，这里使用通用字段）
+            # 需要根据实际返回的数据结构进行调整
+            if 'code' in industry_df.columns and 'industry' in industry_df.columns:
+                result = pd.DataFrame({
+                    '板块代码': industry_df['code'],
+                    '板块名称': industry_df['industry']
+                })
+                return result
+            else:
+                # 如果字段名不同，需要根据实际情况调整
+                print("行业数据字段结构不符合预期")
+                return None
+        finally:
+            bs.logout()
+    except Exception as e:
+        print(f"获取行业板块列表失败: {e}")
+        return None
 
 
 def predict_with_batch_params(df_list, pred_len, model, tokenizer, T=1.0, top_p=0.9, sample_count=1):
@@ -262,9 +351,11 @@ def predict_with_ensemble_and_confidence(df_list, pred_len, model, tokenizer,
         # 使用原始数据的最后价格作为基准
         base_price = df_list[sector_idx]['close'].iloc[-1]
 
-        # 创建新的预测DataFrame，使用平均值
+        # 修复：创建新的DataFrame而不是修改副本
         final_pred = sector_predictions[0].copy()
-        final_pred['close'].iloc[-1] = mean_close
+
+        # 使用 .loc 方法修改最后一行的收盘价
+        final_pred.loc[final_pred.index[-1], 'close'] = mean_close
 
         final_pred_list.append(final_pred)
 
@@ -275,19 +366,7 @@ def predict_with_ensemble_and_confidence(df_list, pred_len, model, tokenizer,
     return final_pred_list, confidence_scores
 
 
-def get_all_industry_codes():
-    """
-    获取所有行业板块代码
-    """
-    try:
-        industry_list = ak.stock_board_industry_name_em()
-        return industry_list[['板块代码', '板块名称']]
-    except Exception as e:
-        print(f"获取行业板块列表失败: {e}")
-        return None
-
-
-def batch_predict_industry_growth_optimized(codes, names, days=20, model=None, tokenizer=None,
+def batch_predict_industry_growth_optimized(codes, names, days=10, model=None, tokenizer=None,
                                             use_ensemble=True, confidence_threshold=0.6, batch_size=10):
     """
     优化的批量预测多个板块未来涨幅，支持集成预测和置信度评估
@@ -300,7 +379,7 @@ def batch_predict_industry_growth_optimized(codes, names, days=20, model=None, t
         for i, code in enumerate(codes):
             try:
                 df = get_stock_data(code, days=200)
-                if len(df) > 50:  # 确保有足够的历史数据
+                if df is not None and len(df) > 50:  # 确保有足够的历史数据
                     df = df.set_index('timestamps')
                     df_list.append(df)
                     valid_indices.append(i)
@@ -391,7 +470,7 @@ def save_all_sector_predictions_to_csv(results, filename="all_sector_predictions
     print(f"所有行业板块预测结果已保存到 {filename}，共 {len(sorted_results)} 个板块")
 
 
-def analyze_all_sectors_with_optimization(prediction_days=20, batch_size=10,
+def analyze_all_sectors_with_optimization(prediction_days=10, batch_size=10,
                                           output_filename="all_sector_predictions.csv"):
     """
     分析所有行业板块并保存完整排序结果（使用优化算法）
@@ -448,14 +527,14 @@ def analyze_all_sectors_with_optimization(prediction_days=20, batch_size=10,
 
     # 显示前10名
     top_10 = sorted(all_results, key=lambda x: x['growth_rate'], reverse=True)[:10]
-    print("\n=== 预计未来20天涨幅前10的行业板块 ===")
+    print("\n=== 预计未来10天涨幅前10的行业板块 ===")
     for i, item in enumerate(top_10, 1):
         print(f"{i}. {item['name']} ({item['code']}) - 预计涨幅: {item['growth_rate'] * 100:.2f}% "
               f"(置信度: {item['confidence_score']:.3f})")
 
     # 显示后10名（跌幅最大）
     bottom_10 = sorted(all_results, key=lambda x: x['growth_rate'])[:10]
-    print("\n=== 预计未来20天跌幅前10的行业板块 ===")
+    print("\n=== 预计未来10天跌幅前10的行业板块 ===")
     for i, item in enumerate(bottom_10, 1):
         print(f"{i}. {item['name']} ({item['code']}) - 预计跌幅: {item['growth_rate'] * 100:.2f}% "
               f"(置信度: {item['confidence_score']:.3f})")
@@ -469,7 +548,7 @@ def predict_top_growing_sectors():
     """
     # 使用优化后的分析函数
     all_results = analyze_all_sectors_with_optimization(
-        prediction_days=20,
+        prediction_days=10,
         batch_size=10,  # 减少批次大小以降低请求频率
         output_filename="industry_predictions_" + datetime.now().strftime('%Y%m%d_%H%M%S') + ".csv"
     )
@@ -485,7 +564,7 @@ def predict_top_growing_sectors():
 if __name__ == "__main__":
     # 执行优化后的预测
     all_results = analyze_all_sectors_with_optimization(
-        prediction_days=20,
+        prediction_days=10,
         batch_size=10,  # 控制批次大小，减少请求频率
         output_filename="industry_predictions_" + datetime.now().strftime('%Y%m%d_%H%M%S') + ".csv"
     )

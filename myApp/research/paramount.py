@@ -480,9 +480,9 @@ def find_best_parameters_batch(symbols, prediction_days=10):
 
 if __name__ == "__main__":
     # 测试单个股票的参数组合
-    # stock_symbol = 'BK0427'  # 板块指数代码
-    # find_best_parameters(stock_symbol, prediction_days=10)
+    stock_symbol = '600682'  # 板块指数代码
+    find_best_parameters(stock_symbol, prediction_days=10)
 
     # 或者测试多个股票的批量参数优化
-    symbols = ['BK0427', 'BK0428', '600036']  # 可以包含板块指数和股票
-    find_best_parameters_batch(symbols, prediction_days=30)
+    # symbols = ['BK0427', 'BK0428', '600036']  # 可以包含板块指数和股票
+    # find_best_parameters_batch(symbols, prediction_days=30)
