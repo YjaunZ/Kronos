@@ -103,7 +103,6 @@ def get_stock_data(symbol, days=500):
 
     return required_data
 
-
 def get_available_industry_codes():
     """
     获取所有可用的行业板块代码
@@ -116,6 +115,78 @@ def get_available_industry_codes():
     except Exception as e:
         print(f"获取行业板块列表失败: {e}")
         return None
+
+def generate_short_term_prediction_kline_with_ma_macd_continuous(stock_symbol, prediction_days=10, candle_width=0.6):
+    """
+    生成带MA20、MA60、MACD和成交量的短期预测K线图的主要函数（连续时间轴版本）
+    参数:
+    - candle_width: K线宽度，控制K线之间的距离 (0.1-1.0)
+    """
+    print(
+        f"开始生成{'板块指数' if stock_symbol.startswith('BK') else '股票'} {stock_symbol} 的带MA/MACD的短期预测K线图（连续时间轴）...")
+
+    # 检查是否为板块指数
+    if stock_symbol.startswith('BK'):
+        print(f"检测到板块指数代码: {stock_symbol}")
+        try:
+            available_codes = get_available_industry_codes()
+        except:
+            print("无法获取行业板块列表")
+
+    print(f"K线宽度设置为: {candle_width}")
+    print(f"短期预测天数: {prediction_days} 天")
+
+    # 1. 加载模型和分词器
+    print("正在加载模型和分词器...")
+    try:
+        tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
+        model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
+        print("模型加载完成")
+    except Exception as e:
+        print(f"模型加载失败: {e}")
+        return
+
+    # 2. 获取股票或板块指数数据
+    print("正在获取数据...")
+    try:
+        df = get_stock_data(stock_symbol, days=200)  # 获取近200天数据用于短期预测
+        if df.empty:
+            print("获取的数据为空")
+            return
+
+        print(f"获取到 {len(df)} 条历史数据")
+        df = df.set_index('timestamps')
+
+    except Exception as e:
+        print(f"获取数据失败: {e}")
+        return
+
+    # 3. 执行短期预测
+    print(f"正在进行 {prediction_days} 天的短期预测...")
+    try:
+        prediction_df = predict_stock_for_duration(df, prediction_days, model, tokenizer)
+        print(f"短期预测完成，预测了 {len(prediction_df)} 天")
+
+        # 如果预测的成交量有负值或异常值，将其设置为合理范围内的平均值
+        prediction_df['volume'] = prediction_df['volume'].clip(lower=df['volume'].quantile(0.1),
+                                                               upper=df['volume'].quantile(0.9))
+    except Exception as e:
+        print(f"预测失败: {e}")
+        return
+
+    # 4. 绘制K线图（包含MA20、MA60、MACD、成交量，使用连续时间轴）
+    print("正在生成带MA/MACD的连续时间轴短期预测K线图...")
+    plot_candlestick_with_ma_macd_and_prediction_continuous_short(df, prediction_df, stock_symbol, prediction_days,
+                                                                 candle_width)
+
+    # 5. 输出预测摘要
+    print("\n=== 短期预测结果摘要 ===")
+    print(f"{'板块指数' if stock_symbol.startswith('BK') else '股票'}代码: {stock_symbol}")
+    print(f"预测天数: {prediction_days} 天")
+    print(f"预测期间价格范围: {prediction_df['close'].min():.2f} - {prediction_df['close'].max():.2f}")
+    print(f"预测期间成交量范围: {int(prediction_df['volume'].min()):,} - {int(prediction_df['volume'].max()):,}")
+    print(f"预测起始日期: {prediction_df.index[0].strftime('%Y-%m-%d')}")
+    print(f"预测结束日期: {prediction_df.index[-1].strftime('%Y-%m-%d')}")
 
 
 def calculate_ma(data, window):
@@ -157,9 +228,9 @@ def predict_stock_for_duration(df, pred_len, model, tokenizer):
         x_timestamp=x_timestamp,
         y_timestamp=y_timestamp_series,
         pred_len=pred_len,
-        T=0.6,
-        top_p=0.8,
-        sample_count=1,
+        T=1.0,
+        top_p=0.9,
+        sample_count=3,
         verbose=False
     )
 
@@ -169,10 +240,10 @@ def predict_stock_for_duration(df, pred_len, model, tokenizer):
     return pred_df
 
 
-def plot_candlestick_with_ma_macd_and_prediction_continuous_medium(historical_df, prediction_df, stock_symbol,
-                                                                   prediction_days=30, candle_width=0.6):
+def plot_candlestick_with_ma_macd_and_prediction_continuous_short(historical_df, prediction_df, stock_symbol,
+                                                                 prediction_days=10, candle_width=0.6):
     """
-    绘制中线预测带MA20、MA60、MACD和预测的K线图，消除假期导致的时间间隔，使数据连续显示
+    绘制短期预测带MA20、MA60、MACD和预测的K线图，消除假期导致的时间间隔，使数据连续显示
     参数:
     - candle_width: K线宽度，控制K线之间的距离 (0.1-1.0)
     """
@@ -205,7 +276,7 @@ def plot_candlestick_with_ma_macd_and_prediction_continuous_medium(historical_df
         ohlc_list.append([row['continuous_index'], row['open'], row['high'], row['low'], row['close']])
 
     # 创建子图布局：上半部分是K线图，中间是成交量图，下面是MACD图
-    fig = plt.figure(figsize=(18, 14))
+    fig = plt.figure(figsize=(16, 14))
     gs = gridspec.GridSpec(3, 1, height_ratios=[3, 1, 1], hspace=0.01)
     ax1 = plt.subplot(gs[0])  # K线图
     ax2 = plt.subplot(gs[1], sharex=ax1)  # 成交量图
@@ -270,7 +341,7 @@ def plot_candlestick_with_ma_macd_and_prediction_continuous_medium(historical_df
 
     # 设置标题和标签
     ax1.set_title(
-        f'{stock_symbol} - Medium-term Prediction K-line Chart with MA & MACD (Continuous Time)\nPrediction Period: {prediction_days} days',
+        f'{stock_symbol} - Short-term Prediction K-line Chart with MA & MACD (Continuous Time)\nPrediction Period: {prediction_days} days',
         fontsize=16, fontweight='bold')
     ax1.set_ylabel('Price', fontsize=12)
     ax2.set_ylabel('Volume', fontsize=12)
@@ -280,7 +351,7 @@ def plot_candlestick_with_ma_macd_and_prediction_continuous_medium(historical_df
     # 设置x轴标签，显示对应的实际日期
     # 每隔一定数量的点显示一个日期标签
     total_points = len(combined_df_reset)
-    step = max(1, total_points // 15)  # 为中线预测增加更多标签
+    step = max(1, total_points // 10)  # 为短期预测调整标签数量
     tick_positions = list(range(0, total_points, step))
     tick_labels = [combined_df_reset.iloc[pos]['index'].strftime('%Y-%m-%d') for pos in tick_positions]
 
@@ -339,86 +410,14 @@ def plot_candlestick_with_ma_macd_and_prediction_continuous_medium(historical_df
     plt.show()
 
 
-def generate_medium_term_prediction_kline_with_ma_macd_continuous(stock_symbol, prediction_days=30, candle_width=0.6):
-    """
-    生成带MA20、MA60、MACD和成交量的中线预测K线图的主要函数（连续时间轴版本）
-    参数:
-    - candle_width: K线宽度，控制K线之间的距离 (0.1-1.0)
-    """
-    print(
-        f"开始生成{'板块指数' if stock_symbol.startswith('BK') else '股票'} {stock_symbol} 的带MA/MACD的中线预测K线图（连续时间轴）...")
-
-    # 检查是否为板块指数
-    if stock_symbol.startswith('BK'):
-        print(f"检测到板块指数代码: {stock_symbol}")
-        try:
-            available_codes = get_available_industry_codes()
-        except:
-            print("无法获取行业板块列表")
-
-    print(f"K线宽度设置为: {candle_width}")
-    print(f"中线预测天数: {prediction_days} 天")
-
-    # 1. 加载模型和分词器
-    print("正在加载模型和分词器...")
-    try:
-        tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
-        model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
-        print("模型加载完成")
-    except Exception as e:
-        print(f"模型加载失败: {e}")
-        return
-
-    # 2. 获取股票或板块指数数据
-    print("正在获取数据...")
-    try:
-        df = get_stock_data(stock_symbol, days=300)  # 获取近300天数据用于中线预测
-        if df.empty:
-            print("获取的数据为空")
-            return
-
-        print(f"获取到 {len(df)} 条历史数据")
-        df = df.set_index('timestamps')
-
-    except Exception as e:
-        print(f"获取数据失败: {e}")
-        return
-
-    # 3. 执行中线预测
-    print(f"正在进行 {prediction_days} 天的中线预测...")
-    try:
-        prediction_df = predict_stock_for_duration(df, prediction_days, model, tokenizer)
-        print(f"中线预测完成，预测了 {len(prediction_df)} 天")
-
-        # 如果预测的成交量有负值或异常值，将其设置为合理范围内的平均值
-        prediction_df['volume'] = prediction_df['volume'].clip(lower=df['volume'].quantile(0.1),
-                                                               upper=df['volume'].quantile(0.9))
-    except Exception as e:
-        print(f"预测失败: {e}")
-        return
-
-    # 4. 绘制K线图（包含MA20、MA60、MACD、成交量，使用连续时间轴）
-    print("正在生成带MA/MACD的连续时间轴中线预测K线图...")
-    plot_candlestick_with_ma_macd_and_prediction_continuous_medium(df, prediction_df, stock_symbol, prediction_days,
-                                                                   candle_width)
-
-    # 5. 输出预测摘要
-    print("\n=== 中线预测结果摘要 ===")
-    print(f"{'板块指数' if stock_symbol.startswith('BK') else '股票'}代码: {stock_symbol}")
-    print(f"预测天数: {prediction_days} 天")
-    print(f"预测期间价格范围: {prediction_df['close'].min():.2f} - {prediction_df['close'].max():.2f}")
-    print(f"预测期间成交量范围: {int(prediction_df['volume'].min()):,} - {int(prediction_df['volume'].max()):,}")
-    print(f"预测起始日期: {prediction_df.index[0].strftime('%Y-%m-%d')}")
-    print(f"预测结束日期: {prediction_df.index[-1].strftime('%Y-%m-%d')}")
-
 
 if __name__ == "__main__":
     # 导入matplotlib.lines用于图例
     from matplotlib import lines as mlines
 
-    # 示例：生成带MA/MACD的中线预测K线图（连续时间轴）
-    stock_symbol = '600809'  # 可以修改为目标股票代码
-    prediction_days = 30  # 中线预测天数
+    # 示例：生成带MA/MACD的短期预测K线图（连续时间轴）
+    stock_symbol = 'BK1034'  # 可以修改为目标股票代码或板块代码如 'BK1033'
+    prediction_days = 10  # 短期预测天数
     candle_width = 0.6  # K线宽度，控制K线之间的距离 (0.1-1.0)
 
-    generate_medium_term_prediction_kline_with_ma_macd_continuous(stock_symbol, prediction_days, candle_width)
+    generate_short_term_prediction_kline_with_ma_macd_continuous(stock_symbol, prediction_days, candle_width)

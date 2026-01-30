@@ -480,7 +480,7 @@ def find_best_parameters_batch(symbols, prediction_days=10):
 
 if __name__ == "__main__":
     # 测试单个股票的参数组合
-    stock_symbol = '600682'  # 板块指数代码
+    stock_symbol = '600515'  # 板块指数代码
     find_best_parameters(stock_symbol, prediction_days=10)
 
     # 或者测试多个股票的批量参数优化

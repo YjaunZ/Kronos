@@ -9,9 +9,12 @@ import sys
 import os
 from datetime import datetime, timedelta
 import holidays
-import akshare as ak
+import baostock as bs
 import matplotlib
 import platform
+import time
+import random
+from functools import wraps
 
 # 根据操作系统选择合适后端
 system = platform.system()
@@ -21,6 +24,32 @@ elif system == "Windows":
     matplotlib.use('TkAgg')
 else:  # Linux
     matplotlib.use('TkAgg')
+
+
+def retry_with_backoff(max_retries=3, backoff_factor=1):
+    """重试装饰器，带有退避策略"""
+
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        raise e
+                    wait_time = backoff_factor * (2 ** attempt) + random.uniform(0, 1)
+                    print(f"第{attempt + 1}次尝试失败，等待{wait_time:.2f}秒后重试: {str(e)}")
+                    time.sleep(wait_time)
+            return None
+
+        return wrapper
+
+    return decorator
+
+
+# 登录baostock
+lg = bs.login()
 
 # 添加项目路径
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
@@ -54,41 +83,65 @@ def generate_future_trading_days(start_date, num_days):
     return trading_days
 
 
+@retry_with_backoff(max_retries=3, backoff_factor=1)
 def get_stock_data(symbol, days=500):
-    """获取指定天数的股票或板块指数数据"""
-    end_date = datetime.now().strftime('%Y%m%d')
-    start_date = (datetime.now() - timedelta(days=days)).strftime('%Y%m%d')
+    """获取指定天数的股票数据（baostock版本）"""
+    end_date = datetime.now().strftime('%Y-%m-%d')
+    start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
 
-    # 判断是否为板块指数
-    if symbol.startswith('BK'):
-        # 使用板块指数专用接口
-        stockdata = ak.stock_board_industry_hist_em(
-            symbol=symbol,
-            start_date=start_date,
-            end_date=end_date,
-            adjust=""  # 板块指数不需要复权
-        )
+    # 处理股票代码格式
+    if symbol.startswith(('sh', 'sz')):
+        code = symbol  # 已经是baostock格式
+    elif symbol.startswith('6'):  # 上交所
+        code = f"sh.{symbol}"
+    elif symbol.startswith(('0', '3')):  # 深交所
+        code = f"sz.{symbol}"
     else:
-        # 使用普通股票接口
-        stockdata = ak.stock_zh_a_hist(
-            symbol=symbol,
-            period="daily",
-            start_date=start_date,
-            end_date=end_date,
-            adjust="qfq"
-        )
+        # 如果已经是带前缀的格式则直接使用
+        code = symbol
+
+    # 添加随机延迟避免请求过于频繁
+    time.sleep(random.uniform(0.5, 1.5))
+
+    # 使用baostock获取股票数据
+    rs = bs.query_history_k_data_plus(
+        code,
+        "date,open,high,low,close,volume",
+        start_date=start_date,
+        end_date=end_date,
+        frequency="d",
+        adjustflag="3"  # 前复权
+    )
+
+    data_list = []
+    while (rs.error_code == '0') & rs.next():
+        data_list.append(rs.get_row_data())
+
+    if not data_list:
+        # 检查是否有错误信息
+        if rs.error_msg:
+            raise ValueError(f"获取股票 {symbol} 的数据失败: {rs.error_msg}")
+        else:
+            raise ValueError(f"无法获取股票 {symbol} 的数据，可能该股票不存在或数据为空")
+
+    # 转换为DataFrame
+    result = pd.DataFrame(data_list, columns=rs.fields)
+
+    # 添加成交额字段（volume * close 的近似值，实际应用中可能需要真实数据）
+    result['amount'] = pd.to_numeric(result['volume'], errors='coerce') * pd.to_numeric(result['close'],
+                                                                                        errors='coerce')
 
     # 重命名列
     column_mapping = {
-        '日期': 'timestamps',
-        '开盘': 'open',
-        '最高': 'high',
-        '最低': 'low',
-        '收盘': 'close',
-        '成交量': 'volume',
-        '成交额': 'amount'
+        'date': 'timestamps',
+        'open': 'open',
+        'high': 'high',
+        'low': 'low',
+        'close': 'close',
+        'volume': 'volume',
+        'amount': 'amount'
     }
-    required_data = stockdata.rename(columns=column_mapping)[list(column_mapping.values())].copy()
+    required_data = result.rename(columns=column_mapping)[list(column_mapping.values())].copy()
 
     # 转换时间戳格式
     required_data['timestamps'] = pd.to_datetime(required_data['timestamps'])
@@ -101,20 +154,44 @@ def get_stock_data(symbol, days=500):
     # 删除包含NaN的行
     required_data = required_data.dropna()
 
+    print(f"成功获取股票 {symbol} {len(required_data)} 条历史数据")
     return required_data
 
-def get_available_industry_codes():
+
+def apply_stock_limit_constraints(pred_df, last_close_price):
     """
-    获取所有可用的行业板块代码
+    应用A股涨跌幅限制约束
+    ST股票: ±5%
+    普通股票: ±10%
+    科创板/创业板新股前5日无涨跌幅限制，之后±20%
     """
-    try:
-        industry_list = ak.stock_board_industry_name_em()
-        print(f"共找到 {len(industry_list)} 个行业板块")
-        print(industry_list[['板块代码', '板块名称']].head(10))
-        return industry_list
-    except Exception as e:
-        print(f"获取行业板块列表失败: {e}")
-        return None
+    # 复制预测数据
+    constrained_df = pred_df.copy()
+
+    # 假设是普通股票，涨跌幅限制为10%
+    limit_up = 0.10
+    limit_down = -0.10
+
+    # 逐行应用涨跌幅限制
+    prev_price = last_close_price
+    for i in range(len(constrained_df)):
+        current_pred = constrained_df.iloc[i]['close']
+
+        # 计算相对于前一日的涨跌幅
+        daily_return = (current_pred - prev_price) / prev_price
+
+        # 限制涨跌幅
+        if daily_return > limit_up:
+            current_pred = prev_price * (1 + limit_up)
+        elif daily_return < limit_down:
+            current_pred = prev_price * (1 + limit_down)
+
+        # 更新预测值
+        constrained_df.iloc[i, constrained_df.columns.get_loc('close')] = current_pred
+        prev_price = current_pred  # 更新前一日价格为当前修正后的价格
+
+    return constrained_df
+
 
 def generate_short_term_prediction_kline_with_ma_macd_continuous(stock_symbol, prediction_days=10, candle_width=0.6):
     """
@@ -122,16 +199,7 @@ def generate_short_term_prediction_kline_with_ma_macd_continuous(stock_symbol, p
     参数:
     - candle_width: K线宽度，控制K线之间的距离 (0.1-1.0)
     """
-    print(
-        f"开始生成{'板块指数' if stock_symbol.startswith('BK') else '股票'} {stock_symbol} 的带MA/MACD的短期预测K线图（连续时间轴）...")
-
-    # 检查是否为板块指数
-    if stock_symbol.startswith('BK'):
-        print(f"检测到板块指数代码: {stock_symbol}")
-        try:
-            available_codes = get_available_industry_codes()
-        except:
-            print("无法获取行业板块列表")
+    print(f"开始生成股票 {stock_symbol} 的带MA/MACD的短期预测K线图（连续时间轴）...")
 
     print(f"K线宽度设置为: {candle_width}")
     print(f"短期预测天数: {prediction_days} 天")
@@ -146,7 +214,7 @@ def generate_short_term_prediction_kline_with_ma_macd_continuous(stock_symbol, p
         print(f"模型加载失败: {e}")
         return
 
-    # 2. 获取股票或板块指数数据
+    # 2. 获取股票数据
     print("正在获取数据...")
     try:
         df = get_stock_data(stock_symbol, days=200)  # 获取近200天数据用于短期预测
@@ -167,6 +235,11 @@ def generate_short_term_prediction_kline_with_ma_macd_continuous(stock_symbol, p
         prediction_df = predict_stock_for_duration(df, prediction_days, model, tokenizer)
         print(f"短期预测完成，预测了 {len(prediction_df)} 天")
 
+        # 应用A股涨跌幅限制
+        last_historical_price = df['close'].iloc[-1]
+        prediction_df = apply_stock_limit_constraints(prediction_df, last_historical_price)
+        print(f"A股涨跌幅限制已应用到预测结果")
+
         # 如果预测的成交量有负值或异常值，将其设置为合理范围内的平均值
         prediction_df['volume'] = prediction_df['volume'].clip(lower=df['volume'].quantile(0.1),
                                                                upper=df['volume'].quantile(0.9))
@@ -177,11 +250,11 @@ def generate_short_term_prediction_kline_with_ma_macd_continuous(stock_symbol, p
     # 4. 绘制K线图（包含MA20、MA60、MACD、成交量，使用连续时间轴）
     print("正在生成带MA/MACD的连续时间轴短期预测K线图...")
     plot_candlestick_with_ma_macd_and_prediction_continuous_short(df, prediction_df, stock_symbol, prediction_days,
-                                                                 candle_width)
+                                                                  candle_width)
 
     # 5. 输出预测摘要
     print("\n=== 短期预测结果摘要 ===")
-    print(f"{'板块指数' if stock_symbol.startswith('BK') else '股票'}代码: {stock_symbol}")
+    print(f"股票代码: {stock_symbol}")
     print(f"预测天数: {prediction_days} 天")
     print(f"预测期间价格范围: {prediction_df['close'].min():.2f} - {prediction_df['close'].max():.2f}")
     print(f"预测期间成交量范围: {int(prediction_df['volume'].min()):,} - {int(prediction_df['volume'].max()):,}")
@@ -241,7 +314,7 @@ def predict_stock_for_duration(df, pred_len, model, tokenizer):
 
 
 def plot_candlestick_with_ma_macd_and_prediction_continuous_short(historical_df, prediction_df, stock_symbol,
-                                                                 prediction_days=10, candle_width=0.6):
+                                                                  prediction_days=10, candle_width=0.6):
     """
     绘制短期预测带MA20、MA60、MACD和预测的K线图，消除假期导致的时间间隔，使数据连续显示
     参数:
@@ -410,14 +483,20 @@ def plot_candlestick_with_ma_macd_and_prediction_continuous_short(historical_df,
     plt.show()
 
 
-
 if __name__ == "__main__":
     # 导入matplotlib.lines用于图例
     from matplotlib import lines as mlines
 
     # 示例：生成带MA/MACD的短期预测K线图（连续时间轴）
-    stock_symbol = '600682'  # 可以修改为目标股票代码或板块代码如 'BK1033'
+    stock_symbol = 'sh.600682'  # 使用baostock格式的股票代码
     prediction_days = 10  # 短期预测天数
     candle_width = 0.6  # K线宽度，控制K线之间的距离 (0.1-1.0)
 
     generate_short_term_prediction_kline_with_ma_macd_continuous(stock_symbol, prediction_days, candle_width)
+
+    # 登出baostock
+    try:
+        bs.logout()
+        print("已登出baostock")
+    except:
+        pass

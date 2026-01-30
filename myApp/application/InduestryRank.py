@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 from functools import wraps
 from tqdm import tqdm  # 导入进度条库
+import itertools
 
 # 根据操作系统选择合适后端
 system = platform.system()
@@ -353,7 +354,7 @@ def get_all_industries_and_build_indices():
     all_required_stocks = set()
     for industry in industries_to_process:
         stocks_in_industry = industry_mapping[industry_mapping['industry'] == industry]['code'].tolist()
-        all_required_stocks.update(stocks_in_industry[:20])  # 每个行业最多取前20只股票
+        all_required_stocks.update(stocks_in_industry)  # 获取所有成分股，不再限制数量
 
     print(f"需要获取 {len(all_required_stocks)} 只股票的数据")
 
@@ -375,7 +376,7 @@ def get_all_industries_and_build_indices():
         stocks_in_industry = industry_mapping[industry_mapping['industry'] == industry]['code'].tolist()
 
         # 筛选出已有数据的股票
-        valid_stocks = [stock for stock in stocks_in_industry[:20] if stock in stock_data_dict]
+        valid_stocks = [stock for stock in stocks_in_industry if stock in stock_data_dict]
 
         if len(valid_stocks) > 0:
             # 获取该行业的股票数据
@@ -419,6 +420,112 @@ def align_data_sequences(df_list, target_length=None):
             continue
 
     return aligned_df_list
+
+
+def find_best_params_for_stock(df, pred_len, model, tokenizer):
+    """
+    为单个股票找到最佳参数组合
+    """
+    # 定义参数搜索空间
+    T_values = [0.5, 0.7, 1.0, 1.3, 1.5]
+    top_p_values = [0.7, 0.8, 0.9]
+    sample_count = 3
+
+    best_params = None
+    best_score = float('inf')  # 最小化误差
+
+    # 创建预测器
+    predictor = KronosPredictor(model, tokenizer, max_context=512)
+
+    # 用于验证的最后几天数据
+    validation_days = min(5, len(df) // 4)  # 取最后5天或1/4数据用于验证
+    if validation_days <= 0:
+        return {'T': 1.0, 'top_p': 0.9}  # 返回默认参数
+
+    # 分割训练和验证数据
+    train_df = df.iloc[:-validation_days]
+    val_df = df.iloc[-validation_days:]
+
+    for T in T_values:
+        for top_p in top_p_values:
+            try:
+                # 使用训练数据预测验证期间
+                max_lookback = min(250, len(train_df) - 50)
+                lookback = max_lookback
+
+                # 准备输入数据
+                x_df = train_df.iloc[-lookback:, :][['open', 'high', 'low', 'close', 'volume', 'amount']].copy()
+                x_timestamp = pd.Series(train_df.index[-lookback:])
+
+                # 生成验证期间的时间戳
+                val_timestamps = pd.DatetimeIndex(val_df.index)
+                y_timestamp_series = pd.Series(val_timestamps)
+
+                # 执行预测
+                pred_df = predictor.predict(
+                    df=x_df,
+                    x_timestamp=x_timestamp,
+                    y_timestamp=y_timestamp_series,
+                    pred_len=validation_days,
+                    T=T,
+                    top_p=top_p,
+                    sample_count=sample_count,
+                    verbose=False
+                )
+
+                # 计算预测误差（MAE）
+                actual_prices = val_df['close'].values
+                predicted_prices = pred_df['close'].values
+                mae = np.mean(np.abs(actual_prices - predicted_prices))
+
+                # 更新最佳参数
+                if mae < best_score:
+                    best_score = mae
+                    best_params = {'T': T, 'top_p': top_p}
+
+            except Exception as e:
+                print(f"参数组合 (T={T}, top_p={top_p}) 验证失败: {e}")
+                continue
+
+    # 如果没找到有效参数，返回默认参数
+    if best_params is None:
+        best_params = {'T': 1.0, 'top_p': 0.9}
+
+    return best_params
+
+
+def predict_stock_with_best_params(df, pred_len, model, tokenizer, best_params):
+    """
+    使用最佳参数预测单个股票
+    """
+    max_lookback = min(250, len(df) - 50)
+    lookback = max_lookback
+
+    # 准备输入数据
+    x_df = df.iloc[-lookback:, :][['open', 'high', 'low', 'close', 'volume', 'amount']].copy()
+    x_timestamp = pd.Series(df.index[-lookback:])
+
+    # 生成未来交易日时间戳
+    future_timestamps = generate_future_trading_days(df.index[-1], pred_len)
+    y_timestamp = pd.DatetimeIndex(future_timestamps)
+    y_timestamp_series = pd.Series(y_timestamp)
+
+    # 创建预测器
+    predictor = KronosPredictor(model, tokenizer, max_context=512)
+
+    # 执行预测
+    pred_df = predictor.predict(
+        df=x_df,
+        x_timestamp=x_timestamp,
+        y_timestamp=y_timestamp_series,
+        pred_len=pred_len,
+        T=best_params['T'],
+        top_p=best_params['top_p'],
+        sample_count=3,
+        verbose=False
+    )
+
+    return pred_df
 
 
 def predict_with_batch_params(df_list, pred_len, model, tokenizer, T=1.0, top_p=0.9, sample_count=1):
@@ -662,23 +769,126 @@ def save_industry_predictions_to_csv(results, filename="industry_predictions_fro
     print(f"行业预测结果已保存到 {filename}，共 {len(sorted_results)} 个行业")
 
 
-def save_detailed_results_to_json(results, filename="industry_predictions_detailed.json"):
+def save_detailed_results_to_excel(all_results, industry_indices, industry_mapping,
+                                   filename="industry_detailed_analysis.xlsx"):
     """
-    将详细的预测结果保存到JSON文件
+    将详细的预测结果和成分股信息保存到Excel文件
     """
-    import json
-    from datetime import datetime
+    from openpyxl import Workbook
+    from openpyxl.utils.dataframe import dataframe_to_rows
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.chart import BarChart, Reference
+    from openpyxl.chart.series import DataPoint
 
-    detailed_results = {
-        'prediction_date': datetime.now().isoformat(),
-        'total_industries': len(results),
-        'results': results
-    }
+    wb = Workbook()
 
-    with open(filename, 'w', encoding='utf-8') as f:
-        json.dump(detailed_results, f, ensure_ascii=False, indent=2, default=str)
+    # 删除默认工作表
+    ws_default = wb.active
+    wb.remove(ws_default)
 
-    print(f"详细预测结果已保存到 {filename}")
+    # 按涨幅排序行业
+    sorted_industries = sorted(all_results, key=lambda x: x['growth_rate'], reverse=True)
+
+    # 创建总览工作表
+    ws_summary = wb.create_sheet(title="行业总览")
+    summary_headers = ['排名', '行业', '预测涨幅', '当前价格', '预测价格', '置信度', '历史波动率', '成交量趋势']
+    ws_summary.append(summary_headers)
+
+    for i, result in enumerate(sorted_industries, 1):
+        row = [
+            i,
+            result['industry'],
+            f"{result['growth_rate'] * 100:.2f}%",
+            result['current_price'],
+            result['predicted_price'],
+            result['confidence_score'],
+            result['volatility'],
+            result['volume_trend']
+        ]
+        ws_summary.append(row)
+
+    # 为表头添加样式
+    header_font = Font(bold=True)
+    header_fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+
+    for cell in ws_summary[1]:
+        cell.font = header_font
+        cell.fill = header_fill
+
+    # 为每个行业创建单独的工作表
+    for result in sorted_industries:
+        industry_name = result['industry']
+
+        # 获取该行业的成分股信息
+        industry_stocks = industry_mapping[industry_mapping['industry'] == industry_name]['code'].tolist()
+
+        # 创建行业工作表
+        ws_industry = wb.create_sheet(title=industry_name[:30])  # 限制工作表名称长度
+
+        # 添加行业概览信息
+        ws_industry.append(['行业概览'])
+        ws_industry.append(['项目', '值'])
+        ws_industry.append(['行业名称', industry_name])
+        ws_industry.append(['预测涨幅', f"{result['growth_rate'] * 100:.2f}%"])
+        ws_industry.append(['当前价格', result['current_price']])
+        ws_industry.append(['预测价格', result['predicted_price']])
+        ws_industry.append(['置信度', result['confidence_score']])
+        ws_industry.append(['历史波动率', result['volatility']])
+        ws_industry.append(['成交量趋势', result['volume_trend']])
+
+        # 添加空行
+        ws_industry.append([])
+
+        # 添加成分股信息
+        ws_industry.append(['成分股详细信息'])
+
+        # 获取成分股数据
+        stock_info = []
+        for stock_code in industry_stocks:
+            if stock_code in globals()['stock_data_dict']:  # 假设全局有stock_data_dict
+                stock_df = globals()['stock_data_dict'][stock_code]
+                current_price = stock_df['close'].iloc[-1]
+                volatility = stock_df['close'].pct_change().std()
+                volume_trend = stock_df['volume'].tail(10).mean() / stock_df['volume'].head(10).mean()
+
+                # 尝试找到最佳参数
+                try:
+                    best_params = find_best_params_for_stock(stock_df, 10, globals()['model'], globals()['tokenizer'])
+                    stock_info.append({
+                        'code': stock_code,
+                        'current_price': current_price,
+                        'volatility': volatility,
+                        'volume_trend': volume_trend,
+                        'best_T': best_params['T'],
+                        'best_top_p': best_params['top_p']
+                    })
+                except:
+                    stock_info.append({
+                        'code': stock_code,
+                        'current_price': current_price,
+                        'volatility': volatility,
+                        'volume_trend': volume_trend,
+                        'best_T': 'N/A',
+                        'best_top_p': 'N/A'
+                    })
+
+        # 添加成分股表头
+        ws_industry.append(['股票代码', '当前价格', '历史波动率', '成交量趋势', '最佳T参数', '最佳top_p参数'])
+
+        # 添加成分股数据
+        for info in stock_info:
+            ws_industry.append([
+                info['code'],
+                info['current_price'],
+                info['volatility'],
+                info['volume_trend'],
+                info['best_T'],
+                info['best_top_p']
+            ])
+
+    # 保存Excel文件
+    wb.save(filename)
+    print(f"详细分析结果已保存到 {filename}")
 
 
 def analyze_industries_from_components(prediction_days=10,
@@ -697,6 +907,14 @@ def analyze_industries_from_components(prediction_days=10,
     except Exception as e:
         print(f"模型加载失败: {e}")
         return
+
+    # 保存模型和分词器到全局变量以便在其他函数中使用
+    globals()['model'] = model
+    globals()['tokenizer'] = tokenizer
+
+    # 获取行业映射
+    print("获取行业映射...")
+    industry_mapping = get_stock_industry_mapping()
 
     # 构建行业指数
     print("正在构建行业指数...")
@@ -721,9 +939,9 @@ def analyze_industries_from_components(prediction_days=10,
     # 保存结果到CSV
     save_industry_predictions_to_csv(all_results, output_filename)
 
-    # 保存详细结果到JSON
-    json_filename = output_filename.replace('.csv', '.json')
-    save_detailed_results_to_json(all_results, json_filename)
+    # 保存详细结果到Excel
+    excel_filename = output_filename.replace('.csv', '_detailed.xlsx')
+    save_detailed_results_to_excel(all_results, industry_indices, industry_mapping, excel_filename)
 
     # 显示前10名
     top_10 = sorted(all_results, key=lambda x: x['growth_rate'], reverse=True)[:10]

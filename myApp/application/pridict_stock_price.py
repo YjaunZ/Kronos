@@ -161,6 +161,146 @@ def get_stock_data(symbol, days=1000):  # 增加默认天数，一次性获取�
     return required_data
 
 
+def get_stock_data_weekly(symbol, weeks=200):
+    """获取周线数据"""
+    end_date = datetime.now().strftime('%Y-%m-%d')
+    start_date = (datetime.now() - timedelta(weeks=weeks)).strftime('%Y-%m-%d')
+
+    # 处理股票代码格式
+    if symbol.startswith(('sh', 'sz')):
+        code = symbol
+    elif symbol.startswith('6'):
+        code = f"sh.{symbol}"
+    elif symbol.startswith(('0', '3')):
+        code = f"sz.{symbol}"
+    else:
+        code = f"sz.{symbol}"
+
+    # 添加随机延迟避免请求过于频繁
+    time.sleep(random.uniform(0.5, 1.5))
+
+    # 使用baostock获取周线数据
+    rs = bs.query_history_k_data_plus(
+        code,
+        "date,open,high,low,close,volume",
+        start_date=start_date,
+        end_date=end_date,
+        frequency="w",
+        adjustflag="3"  # 前复权
+    )
+
+    data_list = []
+    while (rs.error_code == '0') & rs.next():
+        data_list.append(rs.get_row_data())
+
+    if not data_list:
+        if rs.error_msg:
+            raise ValueError(f"获取股票 {symbol} 的周线数据失败: {rs.error_msg}")
+        else:
+            raise ValueError(f"无法获取股票 {symbol} 的周线数据")
+
+    # 转换为DataFrame
+    result = pd.DataFrame(data_list, columns=rs.fields)
+    result['amount'] = pd.to_numeric(result['volume'], errors='coerce') * pd.to_numeric(result['close'],
+                                                                                        errors='coerce')
+
+    # 重命名列
+    column_mapping = {
+        'date': 'timestamps',
+        'open': 'open',
+        'high': 'high',
+        'low': 'low',
+        'close': 'close',
+        'volume': 'volume',
+        'amount': 'amount'
+    }
+    required_data = result.rename(columns=column_mapping)[list(column_mapping.values())].copy()
+
+    # 转换时间戳格式
+    required_data['timestamps'] = pd.to_datetime(required_data['timestamps'])
+
+    # 确保数值列是数字类型
+    numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount']
+    for col in numeric_columns:
+        required_data[col] = pd.to_numeric(required_data[col], errors='coerce')
+
+    # 删除包含NaN的行
+    required_data = required_data.dropna()
+
+    print(f"成功获取股票 {symbol} {len(required_data)} 条周线数据")
+    return required_data
+
+
+def get_stock_data_monthly(symbol, months=100):
+    """获取月线数据"""
+    end_date = datetime.now().strftime('%Y-%m-%d')
+    start_date = (datetime.now() - timedelta(days=months * 30)).strftime('%Y-%m-%d')
+
+    # 处理股票代码格式
+    if symbol.startswith(('sh', 'sz')):
+        code = symbol
+    elif symbol.startswith('6'):
+        code = f"sh.{symbol}"
+    elif symbol.startswith(('0', '3')):
+        code = f"sz.{symbol}"
+    else:
+        code = f"sz.{symbol}"
+
+    # 添加随机延迟避免请求过于频繁
+    time.sleep(random.uniform(0.5, 1.5))
+
+    # 使用baostock获取月线数据
+    rs = bs.query_history_k_data_plus(
+        code,
+        "date,open,high,low,close,volume",
+        start_date=start_date,
+        end_date=end_date,
+        frequency="m",
+        adjustflag="3"  # 前复权
+    )
+
+    data_list = []
+    while (rs.error_code == '0') & rs.next():
+        data_list.append(rs.get_row_data())
+
+    if not data_list:
+        if rs.error_msg:
+            raise ValueError(f"获取股票 {symbol} 的月线数据失败: {rs.error_msg}")
+        else:
+            raise ValueError(f"无法获取股票 {symbol} 的月线数据")
+
+    # 转换为DataFrame
+    result = pd.DataFrame(data_list, columns=rs.fields)
+    result['amount'] = pd.to_numeric(result['volume'], errors='coerce') * pd.to_numeric(result['close'],
+                                                                                        errors='coerce')
+
+    # 重命名列
+    column_mapping = {
+        'date': 'timestamps',
+        'open': 'open',
+        'high': 'high',
+        'low': 'low',
+        'close': 'close',
+        'volume': 'volume',
+        'amount': 'amount'
+    }
+    required_data = result.rename(columns=column_mapping)[list(column_mapping.values())].copy()
+
+    # 转换时间戳格式
+    required_data['timestamps'] = pd.to_datetime(required_data['timestamps'])
+
+    # 确保数值列是数字类型
+    numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount']
+    for col in numeric_columns:
+        required_data[col] = pd.to_numeric(required_data[col], errors='coerce')
+
+    # 删除包含NaN的行
+    required_data = required_data.dropna()
+
+    print(f"成功获取股票 {symbol} {len(required_data)} 条月线数据")
+    return required_data
+
+
 def apply_stock_limit_constraints(pred_df, last_close_price):
     """
     应用A股涨跌幅限制约束
@@ -543,28 +683,48 @@ def find_best_parameters_and_generate_kline(stock_symbol, prediction_days=10, ca
         return
 
     # 2. 获取股票数据 - 一次性获取大量数据
-    print("正在获取股票数据...")
+    print("正在获取日线数据...")
     try:
-        df = get_stock_data(stock_symbol, days=200)  # 获取更多历史数据用于短期预测
-        if df.empty:
-            print("获取的股票数据为空")
+        daily_df = get_stock_data(stock_symbol, days=200)  # 获取更多历史数据用于短期预测
+        if daily_df.empty:
+            print("获取的日线数据为空")
             return
 
-        print(f"获取到 {len(df)} 条历史数据")
-        df = df.set_index('timestamps')
+        print(f"获取到 {len(daily_df)} 条日线数据")
+        daily_df = daily_df.set_index('timestamps')
 
     except Exception as e:
-        print(f"获取股票数据失败: {e}")
+        print(f"获取日线数据失败: {e}")
         return
+
+    # 获取周线数据
+    print("正在获取周线数据...")
+    try:
+        weekly_df = get_stock_data_weekly(stock_symbol, weeks=100)
+        print(f"获取到 {len(weekly_df)} 条周线数据")
+        weekly_df = weekly_df.set_index('timestamps')
+    except Exception as e:
+        print(f"获取周线数据失败: {e}")
+        weekly_df = None
+
+    # 获取月线数据
+    print("正在获取月线数据...")
+    try:
+        monthly_df = get_stock_data_monthly(stock_symbol, months=50)
+        print(f"获取到 {len(monthly_df)} 条月线数据")
+        monthly_df = monthly_df.set_index('timestamps')
+    except Exception as e:
+        print(f"获取月线数据失败: {e}")
+        monthly_df = None
 
     # 3. 生成参数组合
     param_combinations = generate_full_param_combinations()
     print(f"总共生成 {len(param_combinations)} 种参数组合")
 
     # 分割数据为训练和验证部分
-    split_point = len(df) - prediction_days
-    train_df = df[:split_point]
-    actual_future = df[split_point:]
+    split_point = len(daily_df) - prediction_days
+    train_df = daily_df[:split_point]
+    actual_future = daily_df[split_point:]
 
     # 准备并行测试参数
     test_args = [
@@ -620,7 +780,7 @@ def find_best_parameters_and_generate_kline(stock_symbol, prediction_days=10, ca
         # 使用最佳参数组合重新进行预测（这次是为了生成K线图）
         print(f"使用最佳参数组合 {best_param_key} 进行最终预测...")
         final_prediction_df = predict_with_params(
-            df,  # 使用完整数据进行最终预测
+            daily_df,  # 使用完整数据进行最终预测
             prediction_days,
             model,
             tokenizer,
@@ -630,18 +790,23 @@ def find_best_parameters_and_generate_kline(stock_symbol, prediction_days=10, ca
         )
 
         # 应用A股涨跌幅限制
-        last_historical_price = df['close'].iloc[-1]
+        last_historical_price = daily_df['close'].iloc[-1]
         final_prediction_df = apply_stock_limit_constraints(final_prediction_df, last_historical_price)
         print(f"A股涨跌幅限制已应用到预测结果")
 
         # 如果预测的成交量有负值或异常值，将其设置为合理范围内的平均值
-        final_prediction_df['volume'] = final_prediction_df['volume'].clip(lower=df['volume'].quantile(0.1),
-                                                                           upper=df['volume'].quantile(0.9))
+        final_prediction_df['volume'] = final_prediction_df['volume'].clip(lower=daily_df['volume'].quantile(0.1),
+                                                                           upper=daily_df['volume'].quantile(0.9))
 
         # 生成K线图
         print("正在生成带MA/MACD的连续时间轴短期预测K线图...")
         plot_candlestick_with_ma_macd_and_prediction_continuous_short(
-            df, final_prediction_df, stock_symbol, prediction_days, candle_width)
+            daily_df, final_prediction_df, stock_symbol, prediction_days, candle_width)
+
+        # 计算最佳买卖策略和可信度
+        buy_sell_strategy = calculate_best_buy_sell_strategy(
+            daily_df, final_prediction_df, weekly_df, monthly_df
+        )
 
         # 输出预测摘要
         print("\n=== 短期预测结果摘要 ===")
@@ -654,6 +819,18 @@ def find_best_parameters_and_generate_kline(stock_symbol, prediction_days=10, ca
         print(f"预测结束日期: {final_prediction_df.index[-1].strftime('%Y-%m-%d')}")
         print(f"使用的最佳参数: {best_param_key}")
 
+        # 输出交易策略
+        print("\n=== 交易策略 ===")
+        if buy_sell_strategy:
+            print(f"最佳买入时间: {buy_sell_strategy['buy_date']}")
+            print(f"最佳买入价格: {buy_sell_strategy['buy_price']:.2f}")
+            print(f"最佳卖出时间: {buy_sell_strategy['sell_date']}")
+            print(f"最佳卖出价格: {buy_sell_strategy['sell_price']:.2f}")
+            print(f"预计涨幅: {buy_sell_strategy['expected_return'] * 100:.2f}%")
+            print(f"可信度: {buy_sell_strategy['confidence']:.3f}")
+        else:
+            print("未能确定最佳交易策略")
+
         # 清理资源
         del model, tokenizer
         gc.collect()
@@ -661,9 +838,124 @@ def find_best_parameters_and_generate_kline(stock_symbol, prediction_days=10, ca
         print("没有成功生成任何预测结果")
 
 
+def calculate_best_buy_sell_strategy(daily_df, prediction_df, weekly_df=None, monthly_df=None):
+    """
+    计算最佳买入卖出策略
+    """
+    # 获取历史数据的最高价和最低价作为参考
+    historical_high = daily_df['high'].max()
+    historical_low = daily_df['low'].min()
+
+    # 计算预测数据
+    pred_prices = prediction_df['close'].values
+    pred_dates = prediction_df.index
+
+    if len(pred_prices) == 0:
+        return None
+
+    # 找到预测期内的最低价（买入点）和最高价（卖出点）
+    min_idx = np.argmin(pred_prices)
+    max_idx = np.argmax(pred_prices)
+
+    # 确保卖出点在买入点之后
+    if max_idx < min_idx:
+        # 如果最高价在最低价之前，则寻找最低价之后的最高价
+        min_price_after_min = pred_prices[min_idx]
+        max_price_after_min = min_price_after_min
+        max_idx_after_min = min_idx
+
+        for i in range(min_idx + 1, len(pred_prices)):
+            if pred_prices[i] > max_price_after_min:
+                max_price_after_min = pred_prices[i]
+                max_idx_after_min = i
+
+        max_idx = max_idx_after_min
+
+    # 如果最高价仍然在最低价之前，尝试寻找最低价之前的最高价
+    if max_idx < min_idx:
+        max_price_before_min = pred_prices[0]
+        max_idx_before_min = 0
+
+        for i in range(0, min_idx):
+            if pred_prices[i] > max_price_before_min:
+                max_price_before_min = pred_prices[i]
+                max_idx_before_min = i
+
+        max_idx = max_idx_before_min
+
+    # 获取买入和卖出信息
+    buy_date = pred_dates[min_idx]
+    buy_price = pred_prices[min_idx]
+    sell_date = pred_dates[max_idx]
+    sell_price = pred_prices[max_idx]
+
+    # 计算预期收益
+    expected_return = (sell_price - buy_price) / buy_price if buy_price != 0 else 0
+
+    # 计算可信度（基于多个时间周期的一致性）
+    confidence = calculate_confidence_score(
+        daily_df, prediction_df, weekly_df, monthly_df, buy_date, sell_date
+    )
+
+    return {
+        'buy_date': buy_date.strftime('%Y-%m-%d'),
+        'buy_price': buy_price,
+        'sell_date': sell_date.strftime('%Y-%m-%d'),
+        'sell_price': sell_price,
+        'expected_return': expected_return,
+        'confidence': confidence
+    }
+
+
+def calculate_confidence_score(daily_df, prediction_df, weekly_df, monthly_df, buy_date, sell_date):
+    """
+    计算预测可信度分数
+    """
+    # 基础可信度：1.0
+    base_confidence = 1.0
+
+    # 根据预测期内的价格波动幅度调整可信度
+    price_range = (prediction_df['close'].max() - prediction_df['close'].min()) / prediction_df['close'].mean()
+    if price_range > 0.2:  # 波动过大，可信度降低
+        base_confidence *= 0.8
+    elif price_range > 0.1:  # 中等波动，轻微降低
+        base_confidence *= 0.9
+
+    # 如果提供了周线和月线数据，检查趋势一致性
+    if weekly_df is not None:
+        # 检查周线趋势
+        week_before = weekly_df[weekly_df.index < buy_date].tail(1)
+        week_after = weekly_df[weekly_df.index >= sell_date].head(1)
+
+        if not week_before.empty and not week_after.empty:
+            weekly_trend = (week_after['close'].iloc[0] - week_before['close'].iloc[0]) / week_before['close'].iloc[0]
+            if weekly_trend * (sell_date - buy_date).days / 7 > 0:  # 趋势一致
+                base_confidence *= 1.1
+            else:  # 趋势不一致
+                base_confidence *= 0.9
+
+    if monthly_df is not None:
+        # 检查月线趋势
+        month_before = monthly_df[monthly_df.index < buy_date].tail(1)
+        month_after = monthly_df[monthly_df.index >= sell_date].head(1)
+
+        if not month_before.empty and not month_after.empty:
+            monthly_trend = (month_after['close'].iloc[0] - month_before['close'].iloc[0]) / month_before['close'].iloc[
+                0]
+            if monthly_trend * (sell_date - buy_date).days / 30 > 0:  # 趋势一致
+                base_confidence *= 1.1
+            else:  # 趋势不一致
+                base_confidence *= 0.9
+
+    # 确保可信度在合理范围内
+    base_confidence = max(0.1, min(1.0, base_confidence))
+
+    return base_confidence
+
+
 if __name__ == "__main__":
     # 示例：使用最佳参数组合生成K线图
-    stock_symbol = 'sh.601012'  # 使用baostock格式的股票代码
+    stock_symbol = 'sh.000001'  # 使用baostock格式的股票代码
     prediction_days = 10  # 短期预测天数
     candle_width = 0.6  # K线宽度，控制K线之间的距离 (0.1-1.0)
 
