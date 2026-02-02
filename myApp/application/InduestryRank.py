@@ -247,6 +247,29 @@ def get_stock_industry_mapping():
         bs.logout()
 
 
+def select_representative_stocks_for_industry(stocks, stock_data_dict, n=20):
+    """
+    为行业选择代表性股票（基于成交量和成交额）
+    """
+    # 计算每只股票的平均成交量和成交额
+    stock_metrics = []
+    for stock in stocks:
+        if stock in stock_data_dict and not stock_data_dict[stock].empty:
+            # 计算平均成交量
+            avg_volume = stock_data_dict[stock]['volume'].mean()
+            # 计算平均成交额
+            avg_amount = stock_data_dict[stock]['amount'].mean()
+            # 综合指标：成交量 * 0.6 + 成交额 * 0.4
+            composite_metric = avg_volume * 0.6 + avg_amount * 0.4
+            stock_metrics.append((stock, composite_metric))
+
+    # 按综合指标降序排列，选择前n只股票
+    sorted_stocks = sorted(stock_metrics, key=lambda x: x[1], reverse=True)
+    representative_stocks = [stock[0] for stock in sorted_stocks[:n]]
+
+    return representative_stocks
+
+
 def calculate_industry_index_from_components(stock_data_dict, industry_mapping):
     """
     基于成分股数据计算行业指数
@@ -257,9 +280,12 @@ def calculate_industry_index_from_components(stock_data_dict, industry_mapping):
     industry_indices = {}
 
     for industry, stocks in tqdm(industry_groups.items(), desc="计算行业指数", unit="行业"):
-        # 获取该行业所有成分股的数据
+        # 选择代表性股票（前20只）
+        representative_stocks = select_representative_stocks_for_industry(stocks, stock_data_dict, n=20)
+
+        # 获取该行业代表性股票的数据
         valid_stocks_data = []
-        for stock in stocks:
+        for stock in representative_stocks:
             if stock in stock_data_dict and stock_data_dict[stock] is not None and not stock_data_dict[stock].empty:
                 valid_stocks_data.append(stock_data_dict[stock])
 
@@ -347,7 +373,7 @@ def get_all_industries_and_build_indices():
     industry_indices = {}
 
     # 限制行业数量以减少API请求
-    industries_to_process = industries[:50]  # 只处理前50个行业
+    industries_to_process = industries[:30]  # 只处理前30个行业
     print(f"将处理 {len(industries_to_process)} 个行业")
 
     # 首先获取所有需要的股票数据
@@ -360,7 +386,7 @@ def get_all_industries_and_build_indices():
 
     # 批量获取所有股票数据
     stock_data_dict = {}
-    for stock_code in tqdm(all_required_stocks, desc="获取股票数据", unit="股票"):
+    for stock_code in tqdm(list(all_required_stocks), desc="获取股票数据", unit="股票"):
         try:
             stock_data = get_stock_data_cached(stock_code, days=200)
             if stock_data is not None and not stock_data.empty:

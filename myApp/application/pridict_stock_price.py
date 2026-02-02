@@ -19,6 +19,9 @@ from concurrent.futures import ThreadPoolExecutor
 import itertools
 import gc
 
+# 配置中文字体支持
+plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial Unicode MS', 'Microsoft YaHei']
+plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
 # 根据操作系统选择合适后端
 system = platform.system()
 if system == "Darwin":  # macOS
@@ -58,6 +61,33 @@ lg = bs.login()
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 from model import Kronos, KronosTokenizer, KronosPredictor
+
+
+def get_stock_name(symbol):
+    """获取股票名称"""
+    # 处理股票代码格式
+    if symbol.startswith(('sh', 'sz')):
+        code = symbol  # 已经是baostock格式
+    elif symbol.startswith('6'):  # 上交所
+        code = f"sh.{symbol}"
+    elif symbol.startswith(('0', '3')):  # 深交所
+        code = f"sz.{symbol}"
+    else:
+        code = symbol
+
+    # 查询股票基本信息
+    rs = bs.query_stock_basic(code=code)
+    data_list = []
+    while (rs.error_code == '0') & rs.next():
+        data_list.append(rs.get_row_data())
+
+    if data_list:
+        stock_info = pd.DataFrame(data_list, columns=rs.fields)
+        if not stock_info.empty:
+            return stock_info.iloc[0]['code_name']
+
+    # 如果无法获取股票名称，返回股票代码
+    return symbol
 
 
 def generate_future_trading_days(start_date, num_days):
@@ -435,6 +465,9 @@ def plot_candlestick_with_ma_macd_and_prediction_continuous_short(historical_df,
     参数:
     - candle_width: K线宽度，控制K线之间的距离 (0.1-1.0)
     """
+    # 获取股票名称
+    stock_name = get_stock_name(stock_symbol)
+
     # 合并历史和预测数据
     combined_df = pd.concat([historical_df, prediction_df])
 
@@ -596,7 +629,7 @@ def plot_candlestick_with_ma_macd_and_prediction_continuous_short(historical_df,
     ax3.tick_params(labelbottom=True)
 
     plt.tight_layout()
-    plt.show()
+    return fig  # 返回图形对象
 
 
 def evaluate_predictions(actual_df, predicted_df):
@@ -666,13 +699,57 @@ def single_param_test(args):
         return None, None, False
 
 
+def save_investment_strategy_to_csv(buy_sell_strategy, stock_symbol, stock_name, prediction_days, best_param_key,
+                                    filename="investment_strategy.csv"):
+    """
+    将投资策略信息保存到CSV文件中
+    """
+    if buy_sell_strategy:
+        # 计算持股天数
+        buy_date = datetime.strptime(buy_sell_strategy['buy_date'], '%Y-%m-%d')
+        sell_date = datetime.strptime(buy_sell_strategy['sell_date'], '%Y-%m-%d')
+        holding_period = (sell_date - buy_date).days
+
+        # 创建投资策略数据字典
+        strategy_data = {
+            'stock_name': [stock_name],  # 新增股票名称
+            'stock_symbol': [stock_symbol],
+            'buy_date': [buy_sell_strategy['buy_date']],
+            'buy_price': [buy_sell_strategy['buy_price']],
+            'sell_date': [buy_sell_strategy['sell_date']],
+            'sell_price': [buy_sell_strategy['sell_price']],
+            'expected_return_percent': [buy_sell_strategy['expected_return'] * 100],
+            'confidence_score': [buy_sell_strategy['confidence']],
+            'holding_period_days': [holding_period],
+            'prediction_days': [prediction_days],
+            'best_parameters': [best_param_key]
+        }
+
+        # 创建DataFrame
+        strategy_df = pd.DataFrame(strategy_data)
+
+        # 检查文件是否存在，决定是否写入表头
+        file_exists = os.path.isfile(filename)
+
+        # 保存到CSV文件，追加模式
+        strategy_df.to_csv(filename, mode='a', header=not file_exists, index=False)
+
+        print(f"投资策略已保存到 {filename}")
+    else:
+        print("没有有效的投资策略可供保存")
+
+
 def find_best_parameters_and_generate_kline(stock_symbol, prediction_days=10, candle_width=0.6):
     """
     找到最佳参数组合并生成K线图
     """
     print(f"开始测试股票 {stock_symbol} 的参数组合并生成K线图...")
 
-    # 1. 加载模型和分词器
+    # 1. 获取股票名称
+    stock_name = get_stock_name(stock_symbol)
+    print(f"股票名称: {stock_name}")
+
+    # 2. 加载模型和分词器
     print("正在加载模型和分词器...")
     try:
         tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
@@ -682,7 +759,7 @@ def find_best_parameters_and_generate_kline(stock_symbol, prediction_days=10, ca
         print(f"模型加载失败: {e}")
         return
 
-    # 2. 获取股票数据 - 一次性获取大量数据
+    # 3. 获取股票数据 - 一次性获取大量数据
     print("正在获取日线数据...")
     try:
         daily_df = get_stock_data(stock_symbol, days=200)  # 获取更多历史数据用于短期预测
@@ -717,7 +794,7 @@ def find_best_parameters_and_generate_kline(stock_symbol, prediction_days=10, ca
         print(f"获取月线数据失败: {e}")
         monthly_df = None
 
-    # 3. 生成参数组合
+    # 4. 生成参数组合
     param_combinations = generate_full_param_combinations()
     print(f"总共生成 {len(param_combinations)} 种参数组合")
 
@@ -798,10 +875,17 @@ def find_best_parameters_and_generate_kline(stock_symbol, prediction_days=10, ca
         final_prediction_df['volume'] = final_prediction_df['volume'].clip(lower=daily_df['volume'].quantile(0.1),
                                                                            upper=daily_df['volume'].quantile(0.9))
 
-        # 生成K线图
+        # 生成K线图并保存
         print("正在生成带MA/MACD的连续时间轴短期预测K线图...")
-        plot_candlestick_with_ma_macd_and_prediction_continuous_short(
+        fig = plot_candlestick_with_ma_macd_and_prediction_continuous_short(
             daily_df, final_prediction_df, stock_symbol, prediction_days, candle_width)
+
+        # 保存图形
+        chart_filename = f"{stock_symbol}_{stock_name.replace('*', '').replace('/', '').replace('\\', '').replace(':', '').replace('?', '').replace('"', '').replace('<', '').replace('>', '').replace('|', '')}_prediction_chart.png".replace(
+            ' ', '_')
+        fig.savefig(chart_filename, dpi=300, bbox_inches='tight')
+        print(f"K线图已保存到 {chart_filename}")
+        plt.show()
 
         # 计算最佳买卖策略和可信度
         buy_sell_strategy = calculate_best_buy_sell_strategy(
@@ -811,6 +895,7 @@ def find_best_parameters_and_generate_kline(stock_symbol, prediction_days=10, ca
         # 输出预测摘要
         print("\n=== 短期预测结果摘要 ===")
         print(f"股票代码: {stock_symbol}")
+        print(f"股票名称: {stock_name}")
         print(f"预测天数: {prediction_days} 天")
         print(f"预测期间价格范围: {final_prediction_df['close'].min():.2f} - {final_prediction_df['close'].max():.2f}")
         print(
@@ -830,6 +915,10 @@ def find_best_parameters_and_generate_kline(stock_symbol, prediction_days=10, ca
             print(f"可信度: {buy_sell_strategy['confidence']:.3f}")
         else:
             print("未能确定最佳交易策略")
+
+        # 保存投资策略到CSV文件
+        print("\n=== 保存投资策略 ===")
+        save_investment_strategy_to_csv(buy_sell_strategy, stock_symbol, stock_name, prediction_days, best_param_key)
 
         # 清理资源
         del model, tokenizer
@@ -955,8 +1044,9 @@ def calculate_confidence_score(daily_df, prediction_df, weekly_df, monthly_df, b
 
 if __name__ == "__main__":
     # 示例：使用最佳参数组合生成K线图
-    stock_symbol = 'sh.000001'  # 使用baostock格式的股票代码
-    prediction_days = 10  # 短期预测天数
+    stock_symbol = 'sh.601012'  # 使用baostock格式的股票代码
+    # stock_symbol = 'sz.000001'  # 使用baostock格式的股票代码
+    prediction_days = 15  # 短期预测天数
     candle_width = 0.6  # K线宽度，控制K线之间的距离 (0.1-1.0)
 
     find_best_parameters_and_generate_kline(stock_symbol, prediction_days, candle_width)
