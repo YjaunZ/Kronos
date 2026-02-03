@@ -18,6 +18,7 @@ from functools import wraps
 from concurrent.futures import ThreadPoolExecutor
 import itertools
 import gc
+import uuid
 
 # 配置中文字体支持
 plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial Unicode MS', 'Microsoft YaHei']
@@ -704,6 +705,7 @@ def save_investment_strategy_to_csv(buy_sell_strategy, stock_symbol, stock_name,
     """
     将投资策略信息保存到CSV文件中
     """
+    # 保持原文件名，不再生成唯一文件名
     if buy_sell_strategy:
         # 计算持股天数
         buy_date = datetime.strptime(buy_sell_strategy['buy_date'], '%Y-%m-%d')
@@ -722,7 +724,8 @@ def save_investment_strategy_to_csv(buy_sell_strategy, stock_symbol, stock_name,
             'confidence_score': [buy_sell_strategy['confidence']],
             'holding_period_days': [holding_period],
             'prediction_days': [prediction_days],
-            'best_parameters': [best_param_key]
+            'best_parameters': [best_param_key],
+            'run_timestamp': [datetime.now().strftime('%Y-%m-%d %H:%M:%S')]  # 添加运行时间戳
         }
 
         # 创建DataFrame
@@ -875,13 +878,17 @@ def find_best_parameters_and_generate_kline(stock_symbol, prediction_days=10, ca
         final_prediction_df['volume'] = final_prediction_df['volume'].clip(lower=daily_df['volume'].quantile(0.1),
                                                                            upper=daily_df['volume'].quantile(0.9))
 
-        # 生成K线图并保存
+        # 生成K线图并保存 - 使用唯一文件名
         print("正在生成带MA/MACD的连续时间轴短期预测K线图...")
         fig = plot_candlestick_with_ma_macd_and_prediction_continuous_short(
             daily_df, final_prediction_df, stock_symbol, prediction_days, candle_width)
 
-        # 保存图形
-        chart_filename = f"{stock_symbol}_{stock_name.replace('*', '').replace('/', '').replace('\\', '').replace(':', '').replace('?', '').replace('"', '').replace('<', '').replace('>', '').replace('|', '')}_prediction_chart.png".replace(
+        # 保存图形 - 使用唯一文件名（每次运行仍生成唯一图表文件）
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        clean_stock_name = stock_name.replace('*', '').replace('/', '').replace('\\', '').replace(':', '').replace('?',
+                                                                                                                   '').replace(
+            '"', '').replace('<', '').replace('>', '').replace('|', '')
+        chart_filename = f"{stock_symbol}_{clean_stock_name}_prediction_chart_{timestamp}.png".replace(
             ' ', '_')
         fig.savefig(chart_filename, dpi=300, bbox_inches='tight')
         print(f"K线图已保存到 {chart_filename}")
@@ -903,6 +910,7 @@ def find_best_parameters_and_generate_kline(stock_symbol, prediction_days=10, ca
         print(f"预测起始日期: {final_prediction_df.index[0].strftime('%Y-%m-%d')}")
         print(f"预测结束日期: {final_prediction_df.index[-1].strftime('%Y-%m-%d')}")
         print(f"使用的最佳参数: {best_param_key}")
+        print(f"运行时间戳: {timestamp}")
 
         # 输出交易策略
         print("\n=== 交易策略 ===")
@@ -916,7 +924,7 @@ def find_best_parameters_and_generate_kline(stock_symbol, prediction_days=10, ca
         else:
             print("未能确定最佳交易策略")
 
-        # 保存投资策略到CSV文件
+        # 保存投资策略到CSV文件（保存到同一个文件）
         print("\n=== 保存投资策略 ===")
         save_investment_strategy_to_csv(buy_sell_strategy, stock_symbol, stock_name, prediction_days, best_param_key)
 
@@ -1044,8 +1052,8 @@ def calculate_confidence_score(daily_df, prediction_df, weekly_df, monthly_df, b
 
 if __name__ == "__main__":
     # 示例：使用最佳参数组合生成K线图
-    stock_symbol = 'sh.601012'  # 使用baostock格式的股票代码
-    # stock_symbol = 'sz.000001'  # 使用baostock格式的股票代码
+    # stock_symbol = 'sz.002594'  # 使用baostock格式的股票代码
+    stock_symbol = 'sh.000001'  # 使用baostock格式的股票代码
     prediction_days = 15  # 短期预测天数
     candle_width = 0.6  # K线宽度，控制K线之间的距离 (0.1-1.0)
 
