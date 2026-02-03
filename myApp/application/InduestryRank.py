@@ -7,13 +7,16 @@ import holidays
 import baostock as bs
 import matplotlib
 import platform
-from scipy import stats
 import time
 import json
 from pathlib import Path
 from functools import wraps
 from tqdm import tqdm  # 导入进度条库
-import itertools
+from openpyxl import Workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.chart import BarChart, Reference
+from openpyxl.chart.series import DataPoint
 
 # 根据操作系统选择合适后端
 system = platform.system()
@@ -353,6 +356,41 @@ def calculate_industry_index_from_components(stock_data_dict, industry_mapping):
     return industry_indices
 
 
+def get_representative_stocks_for_all_industries(industry_mapping, days=200):
+    """
+    获取所有行业中代表性股票的代码
+    """
+    industries = industry_mapping['industry'].unique()
+
+    # 存储所有代表性股票
+    all_representative_stocks = set()
+
+    for industry in tqdm(industries, desc="分析行业代表性股票", unit="行业"):
+        # 获取该行业所有股票
+        stocks_in_industry = industry_mapping[industry_mapping['industry'] == industry]['code'].tolist()
+
+        # 临时获取这些股票的数据用于计算代表性
+        temp_stock_data_dict = {}
+        for stock_code in stocks_in_industry[:50]:  # 限制每个行业最多分析前50只股票，避免过多API调用
+            try:
+                stock_data = get_stock_data_cached(stock_code, days=min(days, 100))  # 使用较短周期快速评估
+                if stock_data is not None and not stock_data.empty:
+                    temp_stock_data_dict[stock_code] = stock_data
+            except Exception as e:
+                print(f"获取股票 {stock_code} 临时数据失败: {e}")
+
+        # 选择该行业的代表性股票
+        if temp_stock_data_dict:
+            representative_stocks = select_representative_stocks_for_industry(
+                list(temp_stock_data_dict.keys()),
+                temp_stock_data_dict,
+                n=20
+            )
+            all_representative_stocks.update(representative_stocks)
+
+    return list(all_representative_stocks)
+
+
 def get_all_industries_and_build_indices():
     """
     获取所有行业并构建行业指数
@@ -362,7 +400,7 @@ def get_all_industries_and_build_indices():
 
     if industry_mapping is None:
         print("无法获取行业映射，返回空结果")
-        return {}
+        return {}, {}  # 返回空字典
 
     print(f"获取到 {len(industry_mapping)} 条行业映射数据")
 
@@ -376,17 +414,16 @@ def get_all_industries_and_build_indices():
     industries_to_process = industries[:30]  # 只处理前30个行业
     print(f"将处理 {len(industries_to_process)} 个行业")
 
-    # 首先获取所有需要的股票数据
-    all_required_stocks = set()
-    for industry in industries_to_process:
-        stocks_in_industry = industry_mapping[industry_mapping['industry'] == industry]['code'].tolist()
-        all_required_stocks.update(stocks_in_industry)  # 获取所有成分股，不再限制数量
+    # 获取代表性股票代码
+    print("分析各行业代表性股票...")
+    industry_mapping_subset = industry_mapping[industry_mapping['industry'].isin(industries_to_process)]
+    representative_stocks = get_representative_stocks_for_all_industries(industry_mapping_subset, days=200)
 
-    print(f"需要获取 {len(all_required_stocks)} 只股票的数据")
+    print(f"需要获取 {len(representative_stocks)} 只代表性股票的数据")
 
-    # 批量获取所有股票数据
+    # 批量获取代表性股票数据
     stock_data_dict = {}
-    for stock_code in tqdm(list(all_required_stocks), desc="获取股票数据", unit="股票"):
+    for stock_code in tqdm(representative_stocks, desc="获取代表性股票数据", unit="股票"):
         try:
             stock_data = get_stock_data_cached(stock_code, days=200)
             if stock_data is not None and not stock_data.empty:
@@ -420,7 +457,7 @@ def get_all_industries_and_build_indices():
         else:
             print(f"  - 行业 {industry} 没有有效的股票数据")
 
-    return industry_indices
+    return industry_indices, stock_data_dict  # 返回两个字典
 
 
 def align_data_sequences(df_list, target_length=None):
@@ -795,16 +832,11 @@ def save_industry_predictions_to_csv(results, filename="industry_predictions_fro
     print(f"行业预测结果已保存到 {filename}，共 {len(sorted_results)} 个行业")
 
 
-def save_detailed_results_to_excel(all_results, industry_indices, industry_mapping,
+def save_detailed_results_to_excel(all_results, industry_indices, industry_mapping, stock_data_dict,
                                    filename="industry_detailed_analysis.xlsx"):
     """
     将详细的预测结果和成分股信息保存到Excel文件
     """
-    from openpyxl import Workbook
-    from openpyxl.utils.dataframe import dataframe_to_rows
-    from openpyxl.styles import Font, PatternFill, Alignment
-    from openpyxl.chart import BarChart, Reference
-    from openpyxl.chart.series import DataPoint
 
     wb = Workbook()
 
@@ -871,8 +903,8 @@ def save_detailed_results_to_excel(all_results, industry_indices, industry_mappi
         # 获取成分股数据
         stock_info = []
         for stock_code in industry_stocks:
-            if stock_code in globals()['stock_data_dict']:  # 假设全局有stock_data_dict
-                stock_df = globals()['stock_data_dict'][stock_code]
+            if stock_code in stock_data_dict:  # 直接使用传入的stock_data_dict
+                stock_df = stock_data_dict[stock_code]
                 current_price = stock_df['close'].iloc[-1]
                 volatility = stock_df['close'].pct_change().std()
                 volume_trend = stock_df['volume'].tail(10).mean() / stock_df['volume'].head(10).mean()
@@ -944,7 +976,7 @@ def analyze_industries_from_components(prediction_days=10,
 
     # 构建行业指数
     print("正在构建行业指数...")
-    industry_indices = get_all_industries_and_build_indices()
+    industry_indices, stock_data_dict = get_all_industries_and_build_indices()
 
     if not industry_indices:
         print("没有构建出任何行业指数")
@@ -967,7 +999,7 @@ def analyze_industries_from_components(prediction_days=10,
 
     # 保存详细结果到Excel
     excel_filename = output_filename.replace('.csv', '_detailed.xlsx')
-    save_detailed_results_to_excel(all_results, industry_indices, industry_mapping, excel_filename)
+    save_detailed_results_to_excel(all_results, industry_indices, industry_mapping, stock_data_dict, excel_filename)
 
     # 显示前10名
     top_10 = sorted(all_results, key=lambda x: x['growth_rate'], reverse=True)[:10]

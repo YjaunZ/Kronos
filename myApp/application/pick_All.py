@@ -45,6 +45,7 @@ import warnings
 import openpyxl
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+import json
 
 warnings.filterwarnings('ignore')
 
@@ -59,6 +60,72 @@ class StockPredictor:
         self.last_request_time = 0
         self.api_delay = 0.5  # API请求间隔，单位秒
         self.cn_holidays = holidays.China()
+        self.cache_file = "./stock_param_cache.json"  # 缓存文件路径
+        self.cache_expiry_days = 7  # 缓存有效期（天）
+
+    def load_param_cache(self):
+        """加载参数缓存"""
+        if os.path.exists(self.cache_file):
+            try:
+                with open(self.cache_file, 'r', encoding='utf-8') as f:
+                    cache = json.load(f)
+                # 清理过期缓存
+                cache = self.clean_expired_cache(cache)
+                return cache
+            except Exception as e:
+                print(f"加载缓存失败: {e}")
+                return {}
+        return {}
+
+    def clean_expired_cache(self, cache):
+        """清理过期缓存"""
+        current_time = datetime.now()
+        cleaned_cache = {}
+
+        for stock_code, cache_item in cache.items():
+            if 'timestamp' in cache_item:
+                cache_time = datetime.fromisoformat(cache_item['timestamp'])
+                if (current_time - cache_time).days <= self.cache_expiry_days:
+                    cleaned_cache[stock_code] = cache_item
+                else:
+                    print(f"清理过期缓存: {stock_code}")
+            else:
+                # 如果没有时间戳，假设是旧格式，保留但更新时间戳
+                cache_item['timestamp'] = current_time.isoformat()
+                cleaned_cache[stock_code] = cache_item
+
+        return cleaned_cache
+
+    def save_param_cache(self, cache):
+        """保存参数缓存"""
+        try:
+            with open(self.cache_file, 'w', encoding='utf-8') as f:
+                json.dump(cache, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"保存缓存失败: {e}")
+
+    def get_cached_params(self, stock_code):
+        """获取缓存的参数"""
+        cache = self.load_param_cache()
+        if stock_code in cache:
+            cache_item = cache[stock_code]
+            if 'timestamp' in cache_item:
+                cache_time = datetime.fromisoformat(cache_item['timestamp'])
+                if (datetime.now() - cache_time).days <= self.cache_expiry_days:
+                    print(f"使用缓存参数: {stock_code}")
+                    return cache_item['params'], cache_item['rmse']
+        return None, None
+
+    def cache_params(self, stock_code, params, rmse):
+        """缓存参数"""
+        cache = self.load_param_cache()
+        cache[stock_code] = {
+            'params': params,
+            'rmse': rmse,
+            'timestamp': datetime.now().isoformat()
+        }
+        self.save_param_cache(cache)
+        print(f"缓存参数: {stock_code}")
 
     def login_baostock(self):
         """登录baostock服务"""
@@ -340,8 +407,14 @@ class StockPredictor:
 
         return mae, mse, rmse
 
-    def find_best_parameters(self, df, prediction_days=10, model=None, tokenizer=None):
-        """为单个股票找到最佳参数组合"""
+    def find_best_parameters(self, df, prediction_days=10, model=None, tokenizer=None, stock_code=None):
+        """为单个股票找到最佳参数组合，使用缓存机制"""
+        # 如果提供了股票代码，尝试从缓存获取
+        if stock_code:
+            cached_params, cached_rmse = self.get_cached_params(stock_code)
+            if cached_params is not None:
+                return cached_params, cached_rmse
+
         param_combinations = [
             {"T": 0.5, "top_p": 0.8, "sample_count": 1},
             {"T": 0.7, "top_p": 0.85, "sample_count": 1},
@@ -386,6 +459,10 @@ class StockPredictor:
             except Exception as e:
                 print(f"参数组合 {params} 预测失败: {e}")
                 continue
+
+        # 如果找到了更好的参数并且提供了股票代码，缓存结果
+        if best_params is not None and stock_code is not None:
+            self.cache_params(stock_code, best_params, best_rmse)
 
         return best_params, best_rmse
 
@@ -577,7 +654,7 @@ class StockPredictor:
                 print(f"  正在为股票 {code} 寻找最佳参数...")
 
                 best_params, best_rmse = self.find_best_parameters(df, prediction_days=20, model=model,
-                                                                   tokenizer=tokenizer)
+                                                                   tokenizer=tokenizer, stock_code=code)
 
                 if best_params is None:
                     print(f"    - 股票 {code} 参数优化失败，跳过")
@@ -732,13 +809,13 @@ class StockPredictor:
 def main():
     predictor = StockPredictor()
 
-    # 测试模式，只分析20只股票
-    print("开始测试模式，分析20只主板股票...")
-    top_stocks = predictor.predict_top_stocks(top_n=10, test_mode=True, batch_size=5)
+    # # 测试模式，只分析20只股票
+    # print("开始测试模式，分析20只主板股票...")
+    # top_stocks = predictor.predict_top_stocks(top_n=10, test_mode=True, batch_size=5)
 
     # 取消测试模式，分析所有可获得的主板股票
-    # print("开始分析所有主板股票...")
-    # top_stocks = predictor.predict_top_stocks(top_n=10, test_mode=False, batch_size=5)
+    print("开始分析所有主板股票...")
+    top_stocks = predictor.predict_top_stocks(top_n=10, test_mode=False, batch_size=5)
 
     if top_stocks:
         print("完成！以下是预测涨幅前10的股票：")

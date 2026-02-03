@@ -1053,7 +1053,7 @@ def calculate_confidence_score(daily_df, prediction_df, weekly_df, monthly_df, b
 if __name__ == "__main__":
     # 示例：使用最佳参数组合生成K线图
     # stock_symbol = 'sz.002594'  # 使用baostock格式的股票代码
-    stock_symbol = 'sh.000001'  # 使用baostock格式的股票代码
+    stock_symbol = 'sz.000001'  # 使用baostock格式的股票代码
     prediction_days = 15  # 短期预测天数
     candle_width = 0.6  # K线宽度，控制K线之间的距离 (0.1-1.0)
 
