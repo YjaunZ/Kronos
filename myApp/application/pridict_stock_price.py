@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
 import matplotlib.patches as mpatches
 import matplotlib.gridspec as gridspec
 from mplfinance.original_flavor import candlestick_ohlc
@@ -15,10 +14,8 @@ import platform
 import time
 import random
 from functools import wraps
-from concurrent.futures import ThreadPoolExecutor
 import itertools
 import gc
-import uuid
 
 # 配置中文字体支持
 plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial Unicode MS', 'Microsoft YaHei']
@@ -928,6 +925,9 @@ def find_best_parameters_and_generate_kline(stock_symbol, prediction_days=10, ca
         print("\n=== 保存投资策略 ===")
         save_investment_strategy_to_csv(buy_sell_strategy, stock_symbol, stock_name, prediction_days, best_param_key)
 
+        # 保存最佳参数到记录文件
+        save_best_params(stock_symbol, best_result['params'])
+
         # 清理资源
         del model, tokenizer
         gc.collect()
@@ -1053,7 +1053,7 @@ def calculate_confidence_score(daily_df, prediction_df, weekly_df, monthly_df, b
 if __name__ == "__main__":
     # 示例：使用最佳参数组合生成K线图
     # stock_symbol = 'sz.002594'  # 使用baostock格式的股票代码
-    stock_symbol = 'sz.000001'  # 使用baostock格式的股票代码
+    stock_symbol = 'sz.002175'  # 使用baostock格式的股票代码
     prediction_days = 15  # 短期预测天数
     candle_width = 0.6  # K线宽度，控制K线之间的距离 (0.1-1.0)
 

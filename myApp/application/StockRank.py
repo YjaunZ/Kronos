@@ -12,13 +12,76 @@ from pridict_stock_price import (
     calculate_best_buy_sell_strategy,
     calculate_confidence_score,
     get_stock_name,
-    generate_future_trading_days
+    generate_future_trading_days,
+    find_best_parameters_and_generate_kline
 )
 
 from model import Kronos, KronosTokenizer, KronosPredictor
 
 # 全局变量：存储所有股票的预测数据
 all_predictions = []
+
+# 参数记录文件路径
+PARAMS_RECORD_FILE = "best_params_record.csv"
+
+
+def load_best_params(stock_code):
+    """
+    从记录文件中加载指定股票的最佳参数组合
+    """
+    if not os.path.exists(PARAMS_RECORD_FILE):
+        return None
+
+    try:
+        df = pd.read_csv(PARAMS_RECORD_FILE)
+        record = df[df['stock_code'] == stock_code]
+        if not record.empty:
+            best_params = {
+                "T": record.iloc[0]['T'],
+                "top_p": record.iloc[0]['top_p'],
+                "sample_count": record.iloc[0]['sample_count']
+            }
+            return best_params
+    except Exception as e:
+        print(f"加载股票 {stock_code} 的最佳参数失败: {e}")
+
+    return None
+
+
+def save_best_params(stock_code, best_params):
+    """
+    将指定股票的最佳参数组合保存到记录文件中
+    """
+    try:
+        # 创建新的记录
+        new_record = pd.DataFrame([{
+            'stock_code': stock_code,
+            'T': best_params['T'],
+            'top_p': best_params['top_p'],
+            'sample_count': best_params['sample_count'],
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }])
+
+        # 如果文件存在，则追加；否则新建文件
+        if os.path.exists(PARAMS_RECORD_FILE):
+            df = pd.read_csv(PARAMS_RECORD_FILE)
+            # 检查是否已经存在该股票的记录
+            if stock_code in df['stock_code'].values:
+                # 更新现有记录
+                df.loc[df['stock_code'] == stock_code, ['T', 'top_p', 'sample_count', 'timestamp']] = \
+                    [best_params['T'], best_params['top_p'], best_params['sample_count'],
+                     new_record.iloc[0]['timestamp']]
+            else:
+                # 添加新记录
+                df = pd.concat([df, new_record], ignore_index=True)
+        else:
+            df = new_record
+
+        # 保存回文件
+        df.to_csv(PARAMS_RECORD_FILE, index=False)
+        print(f"股票 {stock_code} 的最佳参数已保存到 {PARAMS_RECORD_FILE}")
+    except Exception as e:
+        print(f"保存股票 {stock_code} 的最佳参数失败: {e}")
 
 
 def format_stock_code(stock_code):
@@ -119,6 +182,21 @@ def process_stock_codes_from_excel(file_path, prediction_days=10, candle_width=0
             stock_name = get_stock_name(stock_code)
             print(f"股票名称: {stock_name}")
 
+            # 尝试从记录中加载最佳参数
+            best_params = load_best_params(stock_code)
+            if best_params:
+                print(
+                    f"使用已有最佳参数组合: T={best_params['T']}, top_p={best_params['top_p']}, sample_count={best_params['sample_count']}")
+            else:
+                print("未找到已有最佳参数，开始参数搜索...")
+                # 执行参数搜索
+                find_best_parameters_and_generate_kline(stock_code, prediction_days, candle_width)
+                # 再次尝试加载最佳参数
+                best_params = load_best_params(stock_code)
+                if not best_params:
+                    print(f"未能找到股票 {stock_code} 的最佳参数，跳过")
+                    continue
+
             # 获取股票数据
             print("正在获取股票数据...")
             daily_df = get_stock_data(stock_code, days=200)
@@ -128,16 +206,16 @@ def process_stock_codes_from_excel(file_path, prediction_days=10, candle_width=0
 
             daily_df = daily_df.set_index('timestamps')
 
-            # 使用默认参数进行预测
+            # 使用最佳参数进行预测
             print("正在进行预测...")
             final_prediction_df = predict_with_params(
                 daily_df,
                 prediction_days,
                 model,
                 tokenizer,
-                T=1.0,
-                top_p=0.9,
-                sample_count=1
+                T=best_params['T'],
+                top_p=best_params['top_p'],
+                sample_count=best_params['sample_count']
             )
 
             # 应用A股涨跌幅限制
@@ -155,7 +233,8 @@ def process_stock_codes_from_excel(file_path, prediction_days=10, candle_width=0
                 'prediction_end_date': final_prediction_df.index[-1].strftime('%Y-%m-%d'),
                 'current_price': daily_df['close'].iloc[-1],
                 'predicted_final_price': final_prediction_df['close'].iloc[-1],
-                'predicted_growth_rate': (final_prediction_df['close'].iloc[-1] - daily_df['close'].iloc[-1]) / daily_df['close'].iloc[-1] * 100,
+                'predicted_growth_rate': (final_prediction_df['close'].iloc[-1] - daily_df['close'].iloc[-1]) /
+                                         daily_df['close'].iloc[-1] * 100,
                 'prediction_days': prediction_days,
                 'best_buy_date': buy_sell_strategy['buy_date'] if buy_sell_strategy else 'N/A',
                 'best_buy_price': buy_sell_strategy['buy_price'] if buy_sell_strategy else 'N/A',
